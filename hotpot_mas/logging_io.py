@@ -61,6 +61,12 @@ def collect_environment_info() -> Dict[str, Any]:
         info["datasets_version"] = datasets.__version__
     except Exception:  # noqa: BLE001
         info["datasets_version"] = None
+    try:
+        import vllm
+
+        info["vllm_version"] = vllm.__version__
+    except Exception:  # noqa: BLE001
+        info["vllm_version"] = None
     return info
 
 

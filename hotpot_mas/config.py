@@ -21,6 +21,7 @@ _KNOWN_KEYS = {
     "dataset_split", "num_questions", "runs_per_question", "run_seeds",
     "sample_selection_seed", "model_name", "model_revision",
     "tokenizer_revision", "dtype", "device", "attn_implementation",
+    "engine", "vllm_gpu_memory_utilization", "vllm_enforce_eager",
     "max_input_length", "generation", "max_decision_steps", "prompt_dir",
     "manifest_path", "output_dir", "modes",
 }
@@ -78,9 +79,12 @@ class ExperimentConfig:
     model_name: str = "google/gemma-3-1b-it"
     model_revision: Optional[str] = None
     tokenizer_revision: Optional[str] = None
+    engine: str = "transformers"
     dtype: str = "float16"
     device: str = "cuda"
     attn_implementation: Optional[str] = None
+    vllm_gpu_memory_utilization: float = 0.80
+    vllm_enforce_eager: bool = False
     max_input_length: int = 30000
     generation: GenerationParams = field(default_factory=GenerationParams)
     max_decision_steps: int = 20
@@ -123,9 +127,14 @@ class ExperimentConfig:
             model_name=raw.get("model_name", "google/gemma-3-1b-it"),
             model_revision=raw.get("model_revision"),
             tokenizer_revision=raw.get("tokenizer_revision"),
+            engine=raw.get("engine", "transformers"),
             dtype=raw.get("dtype", "float16"),
             device=raw.get("device", "cuda"),
             attn_implementation=raw.get("attn_implementation"),
+            vllm_gpu_memory_utilization=float(
+                raw.get("vllm_gpu_memory_utilization", 0.80)
+            ),
+            vllm_enforce_eager=bool(raw.get("vllm_enforce_eager", False)),
             max_input_length=int(raw.get("max_input_length", 30000)),
             generation=generation,
             max_decision_steps=int(raw.get("max_decision_steps", 20)),
@@ -158,6 +167,14 @@ class ExperimentConfig:
             raise ValueError(
                 "dtype must be one of: float16, bfloat16, float32"
             )
+        if self.engine not in {"transformers", "vllm"}:
+            raise ValueError("engine must be one of: transformers, vllm")
+        if not 0 < self.vllm_gpu_memory_utilization < 1:
+            raise ValueError(
+                "vllm_gpu_memory_utilization must be strictly between 0 and 1"
+            )
+        if self.engine == "vllm" and self.device != "cuda":
+            raise ValueError("the vllm engine in this experiment requires cuda")
         if self.max_decision_steps <= 0:
             raise ValueError("max_decision_steps must be positive")
         if self.generation.max_new_tokens <= 0:
@@ -233,9 +250,12 @@ class ExperimentConfig:
             "model_name": self.model_name,
             "model_revision": self.model_revision,
             "tokenizer_revision": self.tokenizer_revision,
+            "engine": self.engine,
             "dtype": self.dtype,
             "device": self.device,
             "attn_implementation": self.attn_implementation,
+            "vllm_gpu_memory_utilization": self.vllm_gpu_memory_utilization,
+            "vllm_enforce_eager": self.vllm_enforce_eager,
             "max_input_length": self.max_input_length,
             "generation": self.generation.to_dict(),
             "max_decision_steps": self.max_decision_steps,

@@ -20,7 +20,7 @@ from tqdm import tqdm
 
 from .config import ExperimentConfig
 from .logging_io import JsonlWriter, collect_environment_info
-from .model_engine import HFEngine, ModelEngine
+from .model_engine import HFEngine, ModelEngine, VLLMEngine
 from .orchestrator import Orchestrator
 from .prompts import PromptSet
 from .question_selection import load_manifest
@@ -74,8 +74,19 @@ def run_fingerprint(
     return hashlib.sha256(encoded).hexdigest()
 
 
-def build_engine(cfg: ExperimentConfig) -> HFEngine:
+def build_engine(cfg: ExperimentConfig) -> ModelEngine:
     """Construct the shared frozen model engine (one instance per process)."""
+    if cfg.engine == "vllm":
+        return VLLMEngine(
+            model_name=cfg.model_name,
+            generation_params=cfg.generation,
+            dtype=cfg.dtype,
+            model_revision=cfg.model_revision,
+            tokenizer_revision=cfg.tokenizer_revision,
+            max_input_length=cfg.max_input_length,
+            gpu_memory_utilization=cfg.vllm_gpu_memory_utilization,
+            enforce_eager=cfg.vllm_enforce_eager,
+        )
     return HFEngine(
         model_name=cfg.model_name,
         generation_params=cfg.generation,

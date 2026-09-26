@@ -1,0 +1,4 @@
+-r requirements.txt
+# 0.8.5.post1 supports Gemma3ForCausalLM and matches the server's
+# PyTorch 2.6 / CUDA 12.4 software lane. Do not silently upgrade this.
+vllm==0.8.5.post1

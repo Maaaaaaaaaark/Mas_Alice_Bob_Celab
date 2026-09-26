@@ -43,7 +43,7 @@ D:\Base_Experiment_hotpot_mas\
 │   ├── evaluation.py                     # official HotpotQA evaluator port (normalize/F1/EM)
 │   ├── hotpotqa.py                       # HotpotQA validation loading (datasets)
 │   ├── question_selection.py             # fixed-100 selection + alphabetical evidence partition + manifest
-│   ├── model_engine.py                   # ModelEngine ABC + HFEngine (shared frozen model) + MockEngine (test double)
+│   ├── model_engine.py                   # HF/vLLM engines + MockEngine test double
 │   ├── agents.py                         # Agent (history/input building), make_agents, check_agent_isolation
 │   ├── orchestrator.py                   # per-run state machine (steps, cap, forced final, parse errors)
 │   ├── logging_io.py                     # environment info + JsonlWriter (resumable append) + load_runs
@@ -153,7 +153,9 @@ means; a consistency check that `total_generated_tokens` equals the sum of
 
 1. **Model calls**: transformers `AutoModelForCausalLM.generate()`, batch=1,
    `torch.inference_mode()`, `use_cache=True`; one frozen model shared by
-   the three logical agents; no vLLM.
+   the three logical agents. This is the v4 baseline. The separate
+   `configs/vllm.yaml` condition uses offline `vllm.LLM.chat()` without
+   changing the model, prompts, decoding parameters, questions, or seeds.
 2. **Evidence content**: each worker receives the full paragraph of its
    supporting document, formatted `Title: {title}\n{paragraph}`.
 3. **Partition rule**: the two distinct supporting titles are sorted
@@ -220,22 +222,40 @@ means; a consistency check that `total_generated_tokens` equals the sum of
     official evaluator as an empty prediction (F1/EM = 0) and is never
     guessed, rewritten, retried, or repaired.
 14. **Engine selection**: the orchestrator only knows the `ModelEngine`
-    interface; `HFEngine` (GPU) and `MockEngine` (tests) share the same
-    `generate(messages, seed, speaker)` contract.
+    interface; `HFEngine`, optional `VLLMEngine`, and `MockEngine` share the
+    same `generate(messages, seed, speaker)` contract. vLLM runs verify that
+    its rendered prompt token IDs exactly match Transformers before accepting
+    an output, and log the official tokenizer chat-template hash.
 
-## 8. OPTIMA code: reused vs reimplemented
+## 8. Controlled vLLM comparison
+
+`configs/vllm.yaml` writes to `outputs/hotpotqa_base_mas/v5_vllm/`. It keeps
+the pinned Gemma model/tokenizer revisions, official tokenizer chat template,
+prompts, decoding settings, questions, and seeds unchanged. Install vLLM in a
+separate environment with `requirements-vllm.txt`; do not replace the v4
+environment because pip may resolve a different PyTorch build. The comparison
+pins vLLM 0.8.5.post1, whose official support table includes
+`Gemma3ForCausalLM` / `google/gemma-3-1b-it` and which belongs to the server's
+PyTorch 2.6 / CUDA 12.4 compatibility lane.
+
+The vLLM output-token counter uses returned completion token IDs and restores
+one EOS token only when vLLM reports EOS termination but omits that special
+token from the returned IDs. The policy and vLLM version are stored in every
+run's `engine_info`.
+
+## 9. OPTIMA code: reused vs reimplemented
 
 | Component | Decision | Notes |
 |---|---|---|
-| Agent abstraction (name/memory/independent step) | Reimplemented | 3 agents + strict context isolation; no vLLM client |
-| vLLM call / name-prefix prefill | Not used | transformers `generate()`; prefixes are model-generated tokens |
+| Agent abstraction (name/memory/independent step) | Reimplemented | 3 agents + strict context isolation |
+| OPTIMA vLLM/name-prefix protocol | Not reused | v5 uses our same MAS protocol through vLLM; prefixes remain model-generated |
 | `cal_f1_score` (LLM-tokenizer F1) | Not used | not the official evaluator; official normalize/F1/EM ported verbatim |
 | HotpotQA field handling | Reimplemented | supporting docs only, no distractors, split across workers |
 | `<A>` parser / math parser / boxed | Not used | minimal `<TO>`/`<FINAL>` parser |
 | JSONL append / resumable logging | Reimplemented (idea kept) | spec sec. 15 schema |
 | reward/PPL/DPO/SFT, token-pressure prompts, two-agent alternation | Not used | excluded by spec |
 
-## 9. Known limitations
+## 10. Known limitations
 
 - **Single-side answerability** of the 2-document split cannot be verified
   semantically by a machine; only the supporting-facts/type/paragraph

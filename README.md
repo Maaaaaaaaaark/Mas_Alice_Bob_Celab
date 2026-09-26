@@ -60,7 +60,7 @@ D:\Base_Experiment_hotpot_mas\
 │   └── test_logging.py                   # spec sec. 15 schema, token-sum consistency, resume
 └── outputs/                              # created at runtime (gitignored)
     ├── question_manifest.json            # fixed 100 questions + partitions + rules + sha256
-    └── hotpotqa_base_mas/v1/
+    └── hotpotqa_base_mas/v2/
         ├── runs.jsonl                    # 1000 run records, one JSON object per line
         ├── summary_run_level.json        # mean/std over all runs + all rates
         ├── summary_per_question.json     # per-question means/stds
@@ -103,7 +103,7 @@ python -m hotpot_mas.cli run --config configs/base.yaml --mode full
 pytest tests/
 
 # Re-generate the report from an existing runs.jsonl
-python -m hotpot_mas.cli report --runs outputs/hotpotqa_base_mas/v1/runs.jsonl
+python -m hotpot_mas.cli report --runs outputs/hotpotqa_base_mas/v2/runs.jsonl
 ```
 
 CLI overrides for `run`: `--questions N`, `--runs N`, `--seeds 0,1,2`.
@@ -113,11 +113,11 @@ CLI overrides for `run`: `--questions N`, `--runs N`, `--seeds 0,1,2`.
 | Artifact | Path |
 |---|---|
 | Question manifest | `outputs/question_manifest.json` |
-| Raw run log (1000 records) | `outputs/hotpotqa_base_mas/v1/runs.jsonl` |
-| Run-level summary | `outputs/hotpotqa_base_mas/v1/summary_run_level.json` |
-| Per-question summary | `outputs/hotpotqa_base_mas/v1/summary_per_question.json` |
-| Dataset summary | `outputs/hotpotqa_base_mas/v1/summary_dataset.json` |
-| Human-readable report | `outputs/hotpotqa_base_mas/v1/report.md` |
+| Raw run log (1000 records) | `outputs/hotpotqa_base_mas/v2/runs.jsonl` |
+| Run-level summary | `outputs/hotpotqa_base_mas/v2/summary_run_level.json` |
+| Per-question summary | `outputs/hotpotqa_base_mas/v2/summary_per_question.json` |
+| Dataset summary | `outputs/hotpotqa_base_mas/v2/summary_dataset.json` |
+| Human-readable report | `outputs/hotpotqa_base_mas/v2/report.md` |
 
 Each `runs.jsonl` line is a full run record per spec sec. 15: run identity,
 question + private evidence, prompt version/hashes, resolved config,

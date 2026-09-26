@@ -2,7 +2,7 @@
 # All relative paths are resolved against the repository root.
 
 experiment_id: hotpotqa_base_mas
-experiment_version: v1
+experiment_version: v2
 
 dataset: hotpot_qa
 dataset_config: distractor

@@ -105,7 +105,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add_config(run)
     run.add_argument(
         "--mode",
-        choices=["smoke", "small", "full"],
+        choices=["smoke", "small", "pilot", "full"],
         help="run mode from the config (overrides questions/runs/seeds)",
     )
     run.add_argument(

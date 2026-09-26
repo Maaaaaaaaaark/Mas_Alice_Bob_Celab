@@ -29,6 +29,22 @@ def test_seed_override_sets_run_count():
     assert cfg.run_seeds == [7, 8, 9]
 
 
+def test_protocol_fallback_pilot_mode_is_selectable():
+    args = _build_parser().parse_args(
+        [
+            "run",
+            "--config",
+            "configs/protocol_fallback.yaml",
+            "--mode",
+            "pilot",
+        ]
+    )
+    cfg = _load_config(args)
+    assert cfg.num_questions == 20
+    assert cfg.runs_per_question == 2
+    assert cfg.run_seeds == [0, 1]
+
+
 def test_mismatched_runs_and_seeds_are_rejected():
     with pytest.raises(ValueError, match="must equal len"):
         _load_config(_parse("--runs", "2", "--seeds", "7,8,9"))

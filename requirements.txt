@@ -1,0 +1,9 @@
+# HotpotQA 3-agent MAS base experiment
+# Python >= 3.10 recommended
+torch>=2.4
+transformers>=4.50
+datasets>=2.19
+pyyaml>=6.0
+tqdm>=4.66
+numpy>=1.26
+pytest>=8.0

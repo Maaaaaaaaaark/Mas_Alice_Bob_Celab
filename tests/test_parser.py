@@ -88,9 +88,27 @@ def test_no_marker_is_parse_error():
     assert "no action marker" in (result.error or "")
 
 
-def test_two_different_markers_is_parse_error():
+def test_terminal_final_after_route_uses_audited_precedence_fallback():
     result = parse_celab_output(
         "Celab: <TO>ALICE</TO> x <FINAL>answer</FINAL>"
+    )
+    assert result.status == "ok_terminal_final_precedence_fallback"
+    assert result.action == "final"
+    assert result.body == "answer"
+
+
+def test_terminal_final_after_multiple_routes_uses_audited_fallback():
+    result = parse_celab_output(
+        "Celab: <TO>ALICE</TO> x <TO>BOB</TO> y <FINAL>answer</FINAL>"
+    )
+    assert result.status == "ok_terminal_final_precedence_fallback"
+    assert result.action == "final"
+    assert result.body == "answer"
+
+
+def test_route_after_final_remains_ambiguous():
+    result = parse_celab_output(
+        "Celab: <FINAL>answer</FINAL> x <TO>ALICE</TO>"
     )
     assert result.status == "error"
     assert result.action is None
@@ -112,9 +130,16 @@ def test_incomplete_marker_does_not_match():
     assert result.status == "error"
 
 
-def test_markers_are_case_sensitive():
+def test_closed_route_marker_case_variant_uses_audited_fallback():
     result = parse_celab_output("Celab: <to>alice</to> please")
-    assert result.status == "error"
+    assert result.status == "ok_casefold_route_fallback"
+    assert result.action == "ask_alice"
+
+
+def test_observed_title_case_route_variant_uses_audited_fallback():
+    result = parse_celab_output("Celab: <TO>Alice</TO> please")
+    assert result.status == "ok_casefold_route_fallback"
+    assert result.action == "ask_alice"
 
 
 def test_extract_final_answer_accepts_unique_final():
@@ -133,3 +158,12 @@ def test_extract_final_answer_rejects_to_marker():
     result = extract_final_answer("Celab: <TO>BOB</TO> more info")
     assert result.status == "error"
     assert result.action is None
+
+
+def test_extract_final_answer_accepts_terminal_final_after_route():
+    result = extract_final_answer(
+        "Celab: <TO>BOB</TO> x <FINAL>answer</FINAL>"
+    )
+    assert result.status == "ok_terminal_final_precedence_fallback"
+    assert result.action == "final"
+    assert result.body == "answer"

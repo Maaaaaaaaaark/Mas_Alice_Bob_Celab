@@ -19,8 +19,9 @@ State machine for one (question, run_seed) trajectory:
    does NOT create a step 21; its tokens ARE counted), and extract the
    answer or record forced_final_parse_failure.
 
-Parse errors are never guessed, rewritten, retried, or repaired (spec
-sec. 7). Worker outputs are never parsed; marker-looking text inside a
+The parser may apply only its explicitly logged protocol compatibility
+fallbacks; natural-language actions are never guessed, rewritten, or
+retried. Worker outputs are never parsed; marker-looking text inside a
 worker reply has no effect on routing or termination.
 
 Token accounting (spec sec. 12): ``generated_tokens`` of each event comes
@@ -197,6 +198,8 @@ class Orchestrator:
             "forced_final_calls": 0,
             "generation_cap_agents": [],
             "generation_cap_events": 0,
+            "parse_fallback_events": 0,
+            "parse_fallback_statuses": [],
         }
         token_sums: Dict[str, int] = {
             "input_tokens_alice": 0,
@@ -245,6 +248,12 @@ class Orchestrator:
                 counters["generation_cap_events"] += 1
                 if agent.name not in counters["generation_cap_agents"]:
                     counters["generation_cap_agents"].append(agent.name)
+
+        def record_parse_fallback(status: str) -> None:
+            if status.startswith("ok_") and status.endswith("_fallback"):
+                counters["parse_fallback_events"] += 1
+                if status not in counters["parse_fallback_statuses"]:
+                    counters["parse_fallback_statuses"].append(status)
 
         try:
             # Initial task: the question is delivered to Celab as its first
@@ -296,6 +305,8 @@ class Orchestrator:
                     )
                     break
 
+                record_parse_fallback(parsed.status)
+
                 if parsed.action == "final":
                     parse_status = parsed.status
                     final_parse_fallback = (
@@ -334,7 +345,7 @@ class Orchestrator:
                     decision_steps,
                     celab_message_id,
                     parsed_action=parsed.action,
-                    parse_status="ok",
+                    parse_status=parsed.status,
                     recipient=worker_name,
                 )
                 # Deliver the request, then run the worker. The same Message
@@ -402,6 +413,7 @@ class Orchestrator:
                 final_raw_output = result.raw_output
                 celab_message_id = celab.next_message_id()
                 forced_parse = extract_final_answer(result.raw_output)
+                record_parse_fallback(forced_parse.status)
                 if forced_parse.status != "error":
                     final_answer = forced_parse.body
                     termination_reason = "forced_final"
@@ -470,6 +482,21 @@ class Orchestrator:
                 "final_answer": final_answer,
                 "final_answer_extracted": final_answer,
                 "final_parse_fallback": final_parse_fallback,
+                "protocol_parse_fallback": bool(
+                    counters["parse_fallback_events"]
+                ),
+                "parse_fallback_events": counters["parse_fallback_events"],
+                "parse_fallback_statuses": counters[
+                    "parse_fallback_statuses"
+                ],
+                "casefold_route_fallback": (
+                    "ok_casefold_route_fallback"
+                    in counters["parse_fallback_statuses"]
+                ),
+                "terminal_final_precedence_fallback": (
+                    "ok_terminal_final_precedence_fallback"
+                    in counters["parse_fallback_statuses"]
+                ),
                 "parse_status": parse_status,
                 "parse_error": parse_error,
                 "f1": f1,

@@ -56,6 +56,47 @@ def test_natural_unclosed_final_uses_audited_fallback(run_with_mock):
     assert final_event["parse_status"] == "ok_unclosed_final_fallback"
 
 
+def test_casefold_route_fallback_is_audited_and_run_continues(run_with_mock):
+    scripts = {
+        "celab": [
+            "Celab: <TO>Alice</TO> q1",
+            "Celab: <FINAL>The Connector Bridge</FINAL>",
+        ],
+        "alice": ["Alice: reply"],
+    }
+    record, _ = run_with_mock(scripts=scripts)
+    assert record["termination_reason"] == "natural_final"
+    assert record["num_alice_queries"] == 1
+    assert record["protocol_parse_fallback"] is True
+    assert record["casefold_route_fallback"] is True
+    assert record["terminal_final_precedence_fallback"] is False
+    assert record["parse_fallback_events"] == 1
+    assert record["parse_fallback_statuses"] == [
+        "ok_casefold_route_fallback"
+    ]
+    assert _model_events(record)[0]["parse_status"] == (
+        "ok_casefold_route_fallback"
+    )
+
+
+def test_terminal_final_precedence_fallback_is_scored_officially(run_with_mock):
+    record, _ = run_with_mock(
+        scripts={
+            "celab": [
+                "Celab: <TO>ALICE</TO> x <TO>BOB</TO> y "
+                "<FINAL>The Connector Bridge</FINAL>"
+            ]
+        }
+    )
+    assert record["termination_reason"] == "natural_final"
+    assert record["final_answer"] == "The Connector Bridge"
+    assert record["em"] == 1.0
+    assert record["protocol_parse_fallback"] is True
+    assert record["terminal_final_precedence_fallback"] is True
+    assert record["casefold_route_fallback"] is False
+    assert record["parse_fallback_events"] == 1
+
+
 def test_worker_replies_do_not_increment_decision_steps(run_with_mock):
     scripts = {
         "celab": ["Celab: <TO>ALICE</TO> q1", "Celab: <TO>ALICE</TO> q2",

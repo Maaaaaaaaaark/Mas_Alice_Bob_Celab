@@ -103,6 +103,15 @@ def _run_level_stats(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
             "unclosed_final_fallback_rate": _rate(
                 runs, "final_parse_fallback"
             ),
+            "protocol_parse_fallback_rate": _rate(
+                runs, "protocol_parse_fallback"
+            ),
+            "casefold_route_fallback_rate": _rate(
+                runs, "casefold_route_fallback"
+            ),
+            "terminal_final_precedence_fallback_rate": _rate(
+                runs, "terminal_final_precedence_fallback"
+            ),
             "error_rate": _rate_term_reason(runs, "error"),
         },
         "termination_reason_counts": _termination_counts(runs),
@@ -246,6 +255,12 @@ def _markdown_report(
         ("parse_error_rate", "Parse Error Rate"),
         ("forced_final_rate", "Forced Final Rate"),
         ("unclosed_final_fallback_rate", "Unclosed Final Fallback Rate"),
+        ("protocol_parse_fallback_rate", "Any Protocol Parse Fallback Rate"),
+        ("casefold_route_fallback_rate", "Case-folded Route Fallback Rate"),
+        (
+            "terminal_final_precedence_fallback_rate",
+            "Terminal Final Precedence Fallback Rate",
+        ),
         ("error_rate", "Error Rate"),
     ]:
         entry = rates[name]

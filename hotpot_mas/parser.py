@@ -1,24 +1,30 @@
 """Minimal parser for Celab outputs (spec sec. 7).
 
-Only three actions exist: ask Alice, ask Bob, final answer. An output is
-actionable if and only if exactly one action type occurs and its marker
-occurs exactly once:
+Only three actions exist: ask Alice, ask Bob, final answer:
 
 - ``<TO>ALICE</TO>`` -> ask Alice
 - ``<TO>BOB</TO>``   -> ask Bob
 - ``<FINAL>...</FINAL>`` -> final answer (inner text is the prediction)
 
-Anything else is a parse error. The scheduler must not guess the routing
-target, rewrite the output, or retry (spec sec. 7). Markers are
-case-sensitive. Worker outputs are never parsed; marker-looking text inside
-a worker reply has no effect on routing or termination.
+The canonical forms above remain the normal path. Two narrowly scoped,
+audited compatibility fallbacks cover formatting failures observed in the
+v4 pilot without inferring an action from natural language:
 
-Design choices recorded here: a repeated marker of the same type is treated
-as ambiguous (parse error); ``<FINAL></FINAL>`` is a *valid* final with an
-empty prediction. Experiment v4 additionally accepts exactly one unclosed
-``<FINAL>`` marker, with no routing/closing marker, and treats the remainder
-of the output as the answer. This fallback is explicitly logged rather than
-silently presented as a normally closed final.
+- a uniquely occurring, fully closed route marker may differ only in case;
+- a unique, fully closed ``<FINAL>`` that occurs after every route marker
+  wins over those earlier route markers (the model emitted an entire action
+  sequence in one generation and ended it with an explicit final answer).
+
+Incomplete route markers are deliberately not accepted. Worker outputs are
+never parsed; marker-looking text inside a worker reply has no effect on
+routing or termination.
+
+Design choices recorded here: a repeated route marker without a later final
+is ambiguous; ``<FINAL></FINAL>`` is a *valid* final with an empty prediction.
+Exactly one unclosed ``<FINAL>`` marker, with no routing/closing marker, is
+also accepted and treats the remainder as the answer. Every compatibility
+fallback has a distinct parse status so it is never silently presented as a
+canonical parse.
 """
 
 from __future__ import annotations
@@ -27,8 +33,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-TO_ALICE_RE = re.compile(r"<TO>ALICE</TO>")
-TO_BOB_RE = re.compile(r"<TO>BOB</TO>")
+ROUTE_CASEFOLD_RE = re.compile(r"<TO>(ALICE|BOB)</TO>", re.IGNORECASE)
 FINAL_RE = re.compile(r"<FINAL>(.*?)</FINAL>", re.DOTALL)
 FINAL_OPEN = "<FINAL>"
 FINAL_CLOSE = "</FINAL>"
@@ -38,7 +43,7 @@ FINAL_CLOSE = "</FINAL>"
 class ParseResult:
     action: Optional[str]  # "ask_alice" | "ask_bob" | "final" | None
     body: Optional[str]  # inner <FINAL> text when action == "final"
-    status: str  # "ok" | "ok_unclosed_final_fallback" | "error"
+    status: str  # "ok" | an audited ``ok_*_fallback`` | "error"
     error: Optional[str]
 
 
@@ -47,49 +52,40 @@ def parse_celab_output(text: str) -> ParseResult:
     final_bodies = FINAL_RE.findall(text)
     final_open_count = text.count(FINAL_OPEN)
     final_close_count = text.count(FINAL_CLOSE)
-    counts = {
-        "ask_alice": len(TO_ALICE_RE.findall(text)),
-        "ask_bob": len(TO_BOB_RE.findall(text)),
-        "final": final_open_count,
-    }
-    present = [(action, count) for action, count in counts.items() if count > 0]
-    if not present:
-        return ParseResult(
-            None,
-            None,
-            "error",
-            "no action marker found (expected <TO>ALICE</TO>, <TO>BOB</TO>, "
-            "or <FINAL>...</FINAL>)",
-        )
-    if len(present) > 1:
-        return ParseResult(
-            None,
-            None,
-            "error",
-            "multiple action types present in one output: "
-            + ", ".join(f"{action!r} x{count}" for action, count in present),
-        )
-    action, count = present[0]
-    if count > 1:
-        return ParseResult(
-            None,
-            None,
-            "error",
-            f"action marker {action!r} occurs {count} times (ambiguous)",
-        )
-    if action == "final":
-        if final_open_count != 1:
+    route_matches = list(ROUTE_CASEFOLD_RE.finditer(text))
+
+    # A fully closed final at the end of an emitted action sequence is an
+    # unambiguous terminal action. This recovers outputs such as
+    # ``<TO>ALICE</TO> ... <TO>BOB</TO> ... <FINAL>x</FINAL>`` while still
+    # rejecting a route marker that appears after the final.
+    if (
+        final_open_count == 1
+        and final_close_count == 1
+        and len(final_bodies) == 1
+    ):
+        final_start = text.index(FINAL_OPEN)
+        if not route_matches:
+            return ParseResult("final", final_bodies[0].strip(), "ok", None)
+        if all(match.end() <= final_start for match in route_matches):
             return ParseResult(
+                "final",
+                final_bodies[0].strip(),
+                "ok_terminal_final_precedence_fallback",
                 None,
-                None,
-                "error",
-                f"<FINAL> opening marker occurs {final_open_count} times "
-                "(ambiguous)",
             )
-        if final_close_count == 1 and len(final_bodies) == 1:
-            body = final_bodies[0].strip()
-            return ParseResult("final", body, "ok", None)
-        if final_close_count == 0:
+        return ParseResult(
+            None,
+            None,
+            "error",
+            "route marker occurs after <FINAL> marker (ambiguous)",
+        )
+
+    if final_open_count:
+        if (
+            final_open_count == 1
+            and final_close_count == 0
+            and not route_matches
+        ):
             body = text.split(FINAL_OPEN, 1)[1].strip()
             return ParseResult(
                 "final", body, "ok_unclosed_final_fallback", None
@@ -98,18 +94,39 @@ def parse_celab_output(text: str) -> ParseResult:
             None,
             None,
             "error",
-            "malformed <FINAL> structure: expected exactly one closing "
-            "</FINAL> marker or no closing marker for the logged fallback",
+            "malformed or ambiguous <FINAL> structure",
         )
-    return ParseResult(action, None, "ok", None)
+
+    if not route_matches:
+        return ParseResult(
+            None,
+            None,
+            "error",
+            "no action marker found (expected <TO>ALICE</TO>, <TO>BOB</TO>, "
+            "or <FINAL>...</FINAL>)",
+        )
+    if len(route_matches) > 1:
+        return ParseResult(
+            None,
+            None,
+            "error",
+            f"route marker occurs {len(route_matches)} times (ambiguous)",
+        )
+
+    match = route_matches[0]
+    target = match.group(1).lower()
+    action = f"ask_{target}"
+    canonical = f"<TO>{target.upper()}</TO>"
+    status = "ok" if match.group(0) == canonical else "ok_casefold_route_fallback"
+    return ParseResult(action, None, status, None)
 
 
 def extract_final_answer(text: str) -> ParseResult:
     """Final-answer extraction for the forced-final output.
 
-    A unique closed final, or the explicitly logged v4 unclosed-final
-    fallback, counts. A ``<TO>`` marker (or anything else) in the
-    forced-final output is a failure and yields ``final_answer = null``.
+    A unique closed final, the explicitly logged unclosed-final fallback, or
+    a terminal-final-precedence fallback counts. Other output yields
+    ``final_answer = null``.
     """
     result = parse_celab_output(text)
     if result.action == "final":

@@ -40,6 +40,7 @@ class Event:
     parse_error: Optional[str] = None
     input_tokens: int = 0
     generated_tokens: int = 0
+    generation_seed: Optional[int] = None
     finish_reason: Optional[str] = None  # "eos" | "length" (model generations)
     generation_cap_reached: bool = False
     forced_final: bool = False
@@ -61,6 +62,7 @@ class Event:
             "parse_error": self.parse_error,
             "input_tokens": self.input_tokens,
             "generated_tokens": self.generated_tokens,
+            "generation_seed": self.generation_seed,
             "finish_reason": self.finish_reason,
             "generation_cap_reached": self.generation_cap_reached,
             "forced_final": self.forced_final,

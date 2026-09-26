@@ -14,8 +14,9 @@ run_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 sample_selection_seed: 0
 
 model_name: google/gemma-3-1b-it
-model_revision: null            # null = latest at download time; resolved revision is logged
-tokenizer_revision: null
+# Pin model and tokenizer to the same Hub commit for reproducibility.
+model_revision: dcc83ea841ab6100d6b47a070329e1ba4cf78752
+tokenizer_revision: dcc83ea841ab6100d6b47a070329e1ba4cf78752
 dtype: float16                  # float16 | bfloat16 | float32
 device: cuda
 attn_implementation: null       # null = library default; resolved value is logged

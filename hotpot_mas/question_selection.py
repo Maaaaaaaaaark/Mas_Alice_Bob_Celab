@@ -28,16 +28,20 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .hotpotqa import row_document_paragraph
+from .hotpotqa import (
+    row_context_documents,
+    row_document_paragraph,
+    row_supporting_facts,
+)
 
 
 @dataclass
 class SelectedQuestion:
-    question_id: str  # HotpotQA "_id"
+    question_id: str  # HotpotQA "id" (legacy fixtures may use "_id")
     question: str
     answer: str
     q_type: str
@@ -45,6 +49,9 @@ class SelectedQuestion:
     evidence_alice: str  # "Title: {title}\n{paragraph}"
     evidence_bob: str
     context_titles: List[str]  # titles of all context documents (record only)
+    supporting_facts: List[List[Any]] = field(default_factory=list)
+    hotpotqa_metadata: Dict[str, Any] = field(default_factory=dict)
+    partition_metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 def _format_evidence(title: str, paragraph: str) -> str:
@@ -59,7 +66,12 @@ def is_valid_candidate(row: Dict[str, Any]) -> bool:
     if row.get("type") not in ("bridge", "comparison"):
         return False
     titles: List[str] = []
-    for pair in row.get("supporting_facts") or []:
+    try:
+        supporting_facts = row_supporting_facts(row)
+        context = row_context_documents(row)
+    except (TypeError, ValueError):
+        return False
+    for pair in supporting_facts:
         if not isinstance(pair, (list, tuple)) or len(pair) < 1:
             return False
         title = pair[0]
@@ -69,7 +81,6 @@ def is_valid_candidate(row: Dict[str, Any]) -> bool:
             titles.append(title)
     if len(titles) != 2:
         return False
-    context = row.get("context") or []
     context_titles = {doc.get("title") for doc in context}
     if not set(titles).issubset(context_titles):
         return False
@@ -88,7 +99,12 @@ def _reject_reason(row: Dict[str, Any]) -> Optional[str]:
     if row.get("type") not in ("bridge", "comparison"):
         return "type_not_bridge_or_comparison"
     titles: List[str] = []
-    for pair in row.get("supporting_facts") or []:
+    try:
+        supporting_facts = row_supporting_facts(row)
+        context = row_context_documents(row)
+    except (TypeError, ValueError):
+        return "nested_fields_malformed"
+    for pair in supporting_facts:
         title = pair[0] if isinstance(pair, (list, tuple)) and pair else None
         if not isinstance(title, str):
             return "supporting_facts_malformed"
@@ -96,7 +112,7 @@ def _reject_reason(row: Dict[str, Any]) -> Optional[str]:
             titles.append(title)
     if len(titles) != 2:
         return "supporting_titles_count_not_2"
-    context_titles = {doc.get("title") for doc in (row.get("context") or [])}
+    context_titles = {doc.get("title") for doc in context}
     if not set(titles).issubset(context_titles):
         return "supporting_title_not_in_context"
     return "supporting_paragraph_empty"
@@ -119,14 +135,16 @@ def select_questions(
         if not is_valid_candidate(row):
             continue
         titles = []
-        for pair in row["supporting_facts"]:
+        supporting_facts = row_supporting_facts(row)
+        context_documents = row_context_documents(row)
+        for pair in supporting_facts:
             if pair[0] not in titles:
                 titles.append(pair[0])
         titles_sorted = sorted(titles)
         alice_title, bob_title = titles_sorted[0], titles_sorted[1]
         selected.append(
             SelectedQuestion(
-                question_id=str(row.get("_id", index)),
+                question_id=str(row.get("id", row.get("_id", index))),
                 question=str(row["question"]),
                 answer=str(row["answer"]),
                 q_type=str(row["type"]),
@@ -138,8 +156,19 @@ def select_questions(
                     bob_title, row_document_paragraph(row, bob_title)
                 ),
                 context_titles=[
-                    doc.get("title", "") for doc in (row.get("context") or [])
+                    doc.get("title", "") for doc in context_documents
                 ],
+                supporting_facts=[list(pair) for pair in supporting_facts],
+                hotpotqa_metadata={
+                    "level": row.get("level"),
+                    "type": row.get("type"),
+                },
+                partition_metadata={
+                    "rule": "alphabetical_supporting_title",
+                    "alice_title": alice_title,
+                    "bob_title": bob_title,
+                    "distractors_included": False,
+                },
             )
         )
     return selected

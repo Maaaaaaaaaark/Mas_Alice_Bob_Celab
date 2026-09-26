@@ -182,6 +182,9 @@ means; a consistency check that `total_generated_tokens` equals the sum of
    `forced_final_instruction.txt` is appended to Celab's history as a new
    user turn (controller event, generated_tokens=0) and Celab is called
    once more (`forced_final=True`, decision_step=20, tokens counted).
+   If it follows a worker reply, both user-visible texts remain separate in
+   structured history but are coalesced into one tokenizer turn so Gemma's
+   strict user/assistant alternation remains valid.
    Parseable -> `termination_reason="forced_final"`; otherwise
    `"forced_final_parse_failure"` with `final_answer=null`.
 9. **Token accounting**: `input_tokens = len(apply_chat_template(tokenize=True,
@@ -199,13 +202,16 @@ means; a consistency check that `total_generated_tokens` equals the sum of
     `initial_task` message (spec sec. 5.3 lists Q as a separate input
     component).
 11. **Seeds**: run_index k -> run_seed k for every question; `seed_all` at
-    run start and `seed_torch(run_seed)` before EVERY generation call, so
-    sampling is independent of call order. Same GPU/driver/library versions
-    are required for reproduction (cross-version bitwise equality is not
-    guaranteed).
-12. **Logging**: JSONL, one complete record per run, appended immediately
-    after each run; a re-run skips existing `run_id`s; trailing partial
-    lines are ignored on load. `num_messages` = model_generation event
+    run start. Every model call receives a stable seed derived from
+    `(run_seed, speaker, per-speaker call index)`, giving the three logical
+    agents independent, reproducible sampling streams. Same GPU/driver/library
+    versions are required for reproduction (cross-version bitwise equality is
+    not guaranteed).
+12. **Logging**: JSONL, one complete record per run, appended and fsynced
+    immediately after each run. Run IDs include the question ID and seed;
+    resume skips only records whose full trajectory fingerprint matches.
+    An invalid trailing fragment is removed before appending. `num_messages`
+    = model_generation event
     count; `num_alice_responses` / `num_bob_responses` recorded separately.
 13. **Parse-error evaluation**: `final_answer=null` is passed to the
     official evaluator as an empty prediction (F1/EM = 0) and is never
@@ -235,12 +241,14 @@ means; a consistency check that `total_generated_tokens` equals the sum of
   differ across driver/library versions; identical results are expected
   only for the same GPU + driver + library versions (seeds, dtype, and
   attention implementation are all recorded per run).
-- **Development machine has no Python**: the code was written without local
-  execution; `pytest` and all runs must be executed on the GPU machine.
+- **GPU integration boundary**: CPU/mock tests and real HotpotQA loading are
+  covered locally; actual Gemma generation still requires the gated model and
+  a CUDA machine.
 - **Strict parser**: the uniqueness rule (exactly one marker of one type)
   is deliberately strict and may inflate the Parse Error Rate; parse errors
   are recorded, never repaired (design choice, spec sec. 7).
 - **Gemma-3-1B-IT is gated**: an HF token with access to the model is
-  required; `model_revision` is resolved and logged at load time.
-- **Dataset download**: `prepare-questions` downloads HotpotQA from the HF
-  hub (`trust_remote_code=True` for the dataset script only).
+  required. Model and tokenizer are pinned to a Hub commit in `base.yaml`;
+  their resolved revisions are also logged at run time.
+- **Dataset download**: `prepare-questions` downloads the Parquet-backed
+  HotpotQA dataset from the Hugging Face Hub; no remote dataset code is run.

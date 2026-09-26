@@ -42,6 +42,29 @@ def make_row(
     }
 
 
+def make_hf_row(qid: str) -> Dict[str, Any]:
+    """Current Hugging Face dict-of-parallel-lists representation."""
+    return {
+        "id": qid,
+        "question": "Which document supplies the answer?",
+        "answer": "Doc B",
+        "type": "bridge",
+        "level": "hard",
+        "supporting_facts": {
+            "title": ["Doc A", "Doc B"],
+            "sent_id": [0, 1],
+        },
+        "context": {
+            "title": ["Doc A", "Distractor", "Doc B"],
+            "sentences": [
+                ["Alpha."],
+                ["Irrelevant."],
+                ["Beta one.", "Beta two."],
+            ],
+        },
+    }
+
+
 class TestValidity:
     def test_valid_row_passes(self):
         assert is_valid_candidate(make_row("q1"))
@@ -83,6 +106,17 @@ class TestValidity:
 
 
 class TestSelection:
+    def test_current_huggingface_schema_and_id_are_supported(self):
+        row = make_hf_row("hf-id-123")
+        assert is_valid_candidate(row)
+        selected = select_questions([row], 1, selection_seed=0)[0]
+        assert selected.question_id == "hf-id-123"
+        assert selected.supporting_facts == [["Doc A", 0], ["Doc B", 1]]
+        assert selected.hotpotqa_metadata == {"level": "hard", "type": "bridge"}
+        assert selected.partition_metadata["distractors_included"] is False
+        assert "Irrelevant" not in selected.evidence_alice
+        assert "Irrelevant" not in selected.evidence_bob
+
     def test_deterministic_order_for_same_seed(self):
         rows = [make_row(f"q{i}") for i in range(20)]
         first = select_questions(rows, 10, selection_seed=0)

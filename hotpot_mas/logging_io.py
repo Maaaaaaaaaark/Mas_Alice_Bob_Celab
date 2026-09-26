@@ -9,10 +9,11 @@ line from an interrupted run is discarded.
 from __future__ import annotations
 
 import json
+import os
 import platform
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 
 def collect_environment_info() -> Dict[str, Any]:
@@ -69,34 +70,57 @@ class JsonlWriter:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.existing_ids: Set[str] = set()
+        self.existing_records: Dict[str, Dict[str, Any]] = {}
         if self.path.is_file():
-            self.existing_ids = self._load_existing_ids()
+            self.existing_records = self._load_existing_records()
+            self.existing_ids = set(self.existing_records)
 
-    def _load_existing_ids(self) -> Set[str]:
-        ids: Set[str] = set()
-        with open(self.path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                    run_id = record.get("run_id")
-                    if isinstance(run_id, str):
-                        ids.add(run_id)
-                except json.JSONDecodeError:
-                    # Trailing partial line from an interrupted run: ignore.
-                    continue
-        return ids
+    def _load_existing_records(self) -> Dict[str, Dict[str, Any]]:
+        records: Dict[str, Dict[str, Any]] = {}
+        lines = self.path.read_text(encoding="utf-8").splitlines(keepends=True)
+        valid_lines: List[str] = []
+        for index, line in enumerate(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+                run_id = record.get("run_id")
+                if isinstance(run_id, str):
+                    if run_id in records:
+                        raise RuntimeError(
+                            f"duplicate run_id {run_id!r} in {self.path}"
+                        )
+                    records[run_id] = record
+                valid_lines.append(line + "\n")
+            except json.JSONDecodeError:
+                if index != len(lines) - 1:
+                    raise RuntimeError(
+                        f"invalid JSON before end of JSONL file: "
+                        f"{self.path}:{index + 1}"
+                    )
+                # Remove only an invalid trailing fragment so the next
+                # append starts on a clean line instead of corrupting it.
+                self.path.write_text("".join(valid_lines), encoding="utf-8")
+        return records
 
     def contains(self, run_id: str) -> bool:
         return run_id in self.existing_ids
 
+    def get(self, run_id: str) -> Optional[Dict[str, Any]]:
+        return self.existing_records.get(run_id)
+
     def append(self, record: Dict[str, Any]) -> None:
+        run_id = record["run_id"]
+        if run_id in self.existing_ids:
+            raise RuntimeError(f"refusing to append duplicate run_id: {run_id}")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        self.existing_ids.add(record["run_id"])
+            f.flush()
+            os.fsync(f.fileno())
+        self.existing_ids.add(run_id)
+        self.existing_records[run_id] = record
 
 
 def load_runs(path: Path) -> List[Dict[str, Any]]:

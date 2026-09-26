@@ -110,7 +110,7 @@ class ExperimentConfig:
             )
             for name, m in (raw.get("modes") or {}).items()
         }
-        return cls(
+        cfg = cls(
             experiment_id=raw["experiment_id"],
             experiment_version=raw["experiment_version"],
             dataset=raw.get("dataset", "hotpot_qa"),
@@ -134,6 +134,34 @@ class ExperimentConfig:
             output_dir=_resolve_path(raw.get("output_dir", "outputs")),
             modes=modes,
         )
+        cfg.validate()
+        return cfg
+
+    def validate(self) -> None:
+        """Validate invariants that affect the number and identity of runs."""
+        if self.num_questions <= 0:
+            raise ValueError("num_questions must be positive")
+        if self.runs_per_question <= 0:
+            raise ValueError("runs_per_question must be positive")
+        if not self.run_seeds:
+            raise ValueError("run_seeds must not be empty")
+        if len(self.run_seeds) != self.runs_per_question:
+            raise ValueError(
+                "runs_per_question must equal len(run_seeds): "
+                f"{self.runs_per_question} != {len(self.run_seeds)}"
+            )
+        if len(set(self.run_seeds)) != len(self.run_seeds):
+            raise ValueError("run_seeds must be unique")
+        if any(seed < 0 or seed >= 2**32 for seed in self.run_seeds):
+            raise ValueError("run_seeds must be in NumPy's [0, 2**32) range")
+        if self.dtype not in {"float16", "bfloat16", "float32"}:
+            raise ValueError(
+                "dtype must be one of: float16, bfloat16, float32"
+            )
+        if self.max_decision_steps <= 0:
+            raise ValueError("max_decision_steps must be positive")
+        if self.generation.max_new_tokens <= 0:
+            raise ValueError("generation.max_new_tokens must be positive")
 
     def apply_mode(
         self,
@@ -156,10 +184,34 @@ class ExperimentConfig:
             )
         if num_questions is not None:
             cfg = replace(cfg, num_questions=int(num_questions))
-        if runs_per_question is not None:
-            cfg = replace(cfg, runs_per_question=int(runs_per_question))
+        parsed_seeds = None
         if run_seeds is not None:
-            cfg = replace(cfg, run_seeds=[int(s) for s in run_seeds.split(",") if s.strip()])
+            parsed_seeds = [int(s) for s in run_seeds.split(",") if s.strip()]
+        if runs_per_question is not None and parsed_seeds is None:
+            requested = int(runs_per_question)
+            if requested > len(cfg.run_seeds):
+                raise ValueError(
+                    f"--runs {requested} needs at least {requested} configured seeds; "
+                    f"only {len(cfg.run_seeds)} are available"
+                )
+            cfg = replace(
+                cfg,
+                runs_per_question=requested,
+                run_seeds=list(cfg.run_seeds[:requested]),
+            )
+        elif parsed_seeds is not None and runs_per_question is None:
+            cfg = replace(
+                cfg,
+                runs_per_question=len(parsed_seeds),
+                run_seeds=parsed_seeds,
+            )
+        elif parsed_seeds is not None and runs_per_question is not None:
+            cfg = replace(
+                cfg,
+                runs_per_question=int(runs_per_question),
+                run_seeds=parsed_seeds,
+            )
+        cfg.validate()
         return cfg
 
     def output_subdir(self) -> Path:

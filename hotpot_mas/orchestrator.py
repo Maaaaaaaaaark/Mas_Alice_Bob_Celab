@@ -107,6 +107,7 @@ class Orchestrator:
             parse_error=parse_error,
             input_tokens=result.input_tokens,
             generated_tokens=result.generated_tokens,
+            generation_seed=result.generation_seed,
             finish_reason=result.finish_reason,
             generation_cap_reached=result.generation_cap_reached,
             forced_final=forced_final,
@@ -120,8 +121,13 @@ class Orchestrator:
         run_seed: int,
         run_id: str,
     ) -> Dict[str, Any]:
+        engine_info = self.engine.info()
         return {
+            "experiment_id": self.cfg.experiment_id,
+            "experiment_version": self.cfg.experiment_version,
             "run_id": run_id,
+            "dataset": self.cfg.dataset,
+            "dataset_split": self.cfg.dataset_split,
             "question_id": str(question["question_id"]),
             "run_index": run_index,
             "run_seed": run_seed,
@@ -132,11 +138,27 @@ class Orchestrator:
             "supporting_titles": list(question["supporting_titles"]),
             "private_evidence_alice": question["evidence_alice"],
             "private_evidence_bob": question["evidence_bob"],
+            "alice_private_context": question["evidence_alice"],
+            "bob_private_context": question["evidence_bob"],
+            "dataset_metadata": dict(question.get("hotpotqa_metadata", {})),
+            "supporting_facts": [
+                list(fact) for fact in question.get("supporting_facts", [])
+            ],
+            "partition_metadata": dict(
+                question.get("partition_metadata", {})
+            ),
             "prompt_version": self.prompts.version,
             "prompt_hashes": dict(self.prompts.hashes),
+            "model_name": self.cfg.model_name,
+            "model_revision": engine_info.get("model_revision"),
+            "tokenizer_revision": engine_info.get("tokenizer_revision"),
+            "generation_config": {
+                **self.cfg.generation.to_dict(),
+                "max_decision_steps": self.cfg.max_decision_steps,
+            },
             "config": self.cfg.to_dict(),
             "environment": dict(self.environment_info),
-            "engine_info": self.engine.info(),
+            "engine_info": engine_info,
             "events": [],
         }
 
@@ -188,6 +210,7 @@ class Orchestrator:
         natural_termination = False
         termination_reason: Optional[str] = None
         final_answer: Optional[str] = None
+        final_raw_output: Optional[str] = None
         parse_status = "not_parsed"
         parse_error: Optional[str] = None
         error_message: Optional[str] = None
@@ -253,6 +276,7 @@ class Orchestrator:
                     parse_status = "error"
                     parse_error = parsed.error
                     termination_reason = "parse_error"
+                    final_raw_output = result.raw_output
                     record_generation(
                         celab,
                         result,
@@ -274,6 +298,7 @@ class Orchestrator:
                 if parsed.action == "final":
                     parse_status = "ok"
                     final_answer = parsed.body
+                    final_raw_output = result.raw_output
                     natural_termination = True
                     termination_reason = "natural_final"
                     record_generation(
@@ -370,6 +395,7 @@ class Orchestrator:
                 # Forced-final call: keeps decision_steps at the cap (no
                 # step 21); its generated tokens ARE counted (spec sec. 8).
                 result = celab.generate()
+                final_raw_output = result.raw_output
                 celab_message_id = celab.next_message_id()
                 forced_parse = extract_final_answer(result.raw_output)
                 if forced_parse.status == "ok":
@@ -431,13 +457,20 @@ class Orchestrator:
                 "forced_final_calls": counters["forced_final_calls"],
                 "natural_termination": natural_termination,
                 "termination_reason": termination_reason,
+                "final_raw_output": final_raw_output,
                 "final_answer": final_answer,
+                "final_answer_extracted": final_answer,
                 "parse_status": parse_status,
                 "parse_error": parse_error,
                 "f1": f1,
                 "em": em,
+                "answer_f1": f1,
+                "answer_em": em,
                 "num_alice_queries": counters["num_alice_queries"],
                 "num_bob_queries": counters["num_bob_queries"],
+                "num_total_queries": (
+                    counters["num_alice_queries"] + counters["num_bob_queries"]
+                ),
                 "num_alice_responses": counters["num_alice_responses"],
                 "num_bob_responses": counters["num_bob_responses"],
                 "num_messages": counters["num_messages"],
@@ -447,10 +480,17 @@ class Orchestrator:
                 "input_tokens_bob": token_sums["input_tokens_bob"],
                 "input_tokens_celab": token_sums["input_tokens_celab"],
                 "input_tokens_total": input_tokens_total,
+                "alice_input_tokens": token_sums["input_tokens_alice"],
+                "bob_input_tokens": token_sums["input_tokens_bob"],
+                "celab_input_tokens": token_sums["input_tokens_celab"],
+                "total_input_tokens": input_tokens_total,
                 "generated_tokens_alice": token_sums["generated_tokens_alice"],
                 "generated_tokens_bob": token_sums["generated_tokens_bob"],
                 "generated_tokens_celab": token_sums["generated_tokens_celab"],
                 "total_generated_tokens": generated_tokens_total,
+                "alice_generated_tokens": token_sums["generated_tokens_alice"],
+                "bob_generated_tokens": token_sums["generated_tokens_bob"],
+                "celab_generated_tokens": token_sums["generated_tokens_celab"],
                 # Auxiliary combined count (input + generated); the primary
                 # efficiency metric is total_generated_tokens (spec sec. 12).
                 "total_model_tokens": input_tokens_total + generated_tokens_total,

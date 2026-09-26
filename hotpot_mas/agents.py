@@ -17,6 +17,7 @@ import itertools
 from typing import Any, Dict, List, Optional
 
 from .messages import Message
+from .seeds import derive_generation_seed
 
 
 class Agent:
@@ -33,6 +34,7 @@ class Agent:
         self.run_seed = run_seed
         self.history: List[Message] = []
         self._ids = itertools.count()
+        self._generation_calls = itertools.count()
 
     def next_message_id(self) -> str:
         """Return a message id unique within this run (global counter)."""
@@ -62,13 +64,24 @@ class Agent:
         ]
         for message in self.history:
             role = "assistant" if message.speaker == self.name else "user"
-            messages.append({"role": role, "content": message.content})
+            # Gemma requires strict user/assistant alternation.  The forced
+            # final controller instruction follows a worker reply, so both
+            # are user-visible turns; preserve both texts while coalescing
+            # adjacent same-role inputs into one chat-template turn.
+            if len(messages) > 1 and messages[-1]["role"] == role:
+                messages[-1]["content"] += "\n\n" + message.content
+            else:
+                messages.append({"role": role, "content": message.content})
         return messages
 
     def generate(self) -> Any:
         """Call the shared engine with this agent's current visible input."""
+        call_index = next(self._generation_calls)
+        generation_seed = derive_generation_seed(
+            self.run_seed, self.name, call_index
+        )
         return self.engine.generate(
-            self.build_chat_messages(), self.run_seed, self.name
+            self.build_chat_messages(), generation_seed, self.name
         )
 
 

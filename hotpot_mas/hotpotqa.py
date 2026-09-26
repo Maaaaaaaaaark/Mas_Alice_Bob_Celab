@@ -14,31 +14,58 @@ from typing import Any, Dict, List
 
 def load_hotpotqa_validation(
     dataset_config: str = "distractor",
+    dataset_name: str = "hotpot_qa",
+    split: str = "validation",
 ) -> List[Dict[str, Any]]:
     """Load HotpotQA validation rows as a list of raw dicts.
 
-    ``trust_remote_code=True`` is required by the HotpotQA dataset script and
-    only runs the HF hub script for this dataset.
+    The Hub dataset is Parquet-backed, so no remote dataset code is needed.
     """
     from datasets import load_dataset
 
     ds = load_dataset(
-        "hotpot_qa",
+        dataset_name,
         dataset_config,
-        split="validation",
-        trust_remote_code=True,
+        split=split,
     )
     return [dict(row) for row in ds]
 
 
 def row_supporting_facts(row: Dict[str, Any]) -> List[List]:
-    """Return ``row["supporting_facts"]`` (list of [title, sent_id] pairs)."""
-    return list(row.get("supporting_facts") or [])
+    """Return supporting facts as ``[title, sent_id]`` pairs.
+
+    Hugging Face currently exposes this Sequence feature as a dict of
+    parallel lists.  Older/local JSON fixtures commonly use a list of pairs,
+    so both representations are accepted at this boundary.
+    """
+    facts = row.get("supporting_facts") or []
+    if isinstance(facts, dict):
+        titles = facts.get("title") or []
+        sent_ids = facts.get("sent_id") or []
+        if len(titles) != len(sent_ids):
+            raise ValueError("supporting_facts title/sent_id lengths differ")
+        return [[title, sent_id] for title, sent_id in zip(titles, sent_ids)]
+    return [list(pair) for pair in facts]
+
+
+def row_context_documents(row: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return context as a list of ``{title, sentences}`` dictionaries."""
+    context = row.get("context") or []
+    if isinstance(context, dict):
+        titles = context.get("title") or []
+        sentences = context.get("sentences") or []
+        if len(titles) != len(sentences):
+            raise ValueError("context title/sentences lengths differ")
+        return [
+            {"title": title, "sentences": doc_sentences}
+            for title, doc_sentences in zip(titles, sentences)
+        ]
+    return [dict(doc) for doc in context]
 
 
 def row_sentence(row: Dict[str, Any], title: str, sent_id: int) -> str:
     """Return one sentence of a context document by title and sent_id."""
-    for doc in row.get("context") or []:
+    for doc in row_context_documents(row):
         if doc["title"] == title:
             return doc["sentences"][sent_id]
     raise KeyError(
@@ -52,7 +79,7 @@ def row_document_paragraph(row: Dict[str, Any], title: str) -> str:
     Sentences are joined with spaces because the stored sentences are
     single-space separated pieces of the original paragraph.
     """
-    for doc in row.get("context") or []:
+    for doc in row_context_documents(row):
         if doc["title"] == title:
             return " ".join(doc["sentences"])
     raise KeyError(f"document {title!r} not found in context")

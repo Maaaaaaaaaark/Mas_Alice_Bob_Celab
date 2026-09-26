@@ -1,27 +1,77 @@
 """Trajectory loop: load config + manifest, run questions x seeds, log.
 
 Runs are written to ``runs.jsonl`` one line at a time (append mode) so an
-interrupted run can be resumed: existing ``run_id`` values are skipped.
+interrupted run can be resumed: existing runs are skipped only when their
+trajectory fingerprints match the current inputs and resolved engine.
 Each run's progress is printed to stdout via ``tqdm.write``. The report is
 written automatically at the end of a non-empty run set.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List
 
-import tqdm
+from tqdm import tqdm
 
 from .config import ExperimentConfig
 from .logging_io import JsonlWriter, collect_environment_info
-from .model_engine import HFEngine
+from .model_engine import HFEngine, ModelEngine
 from .orchestrator import Orchestrator
 from .prompts import PromptSet
 from .question_selection import load_manifest
 from .report import write_report
+
+
+def run_fingerprint(
+    cfg: ExperimentConfig,
+    question: Dict[str, Any],
+    run_index: int,
+    run_seed: int,
+    prompts: PromptSet,
+    engine_info: Dict[str, Any],
+    environment_info: Dict[str, Any],
+) -> str:
+    """Hash every input that can change one trajectory's model outputs."""
+    payload = {
+        "experiment_id": cfg.experiment_id,
+        "experiment_version": cfg.experiment_version,
+        "dataset": cfg.dataset,
+        "dataset_config": cfg.dataset_config,
+        "dataset_split": cfg.dataset_split,
+        "sample_selection_seed": cfg.sample_selection_seed,
+        "question": question,
+        "run_index": run_index,
+        "run_seed": run_seed,
+        "model_name": cfg.model_name,
+        "engine_info": engine_info,
+        "runtime_environment": {
+            key: environment_info.get(key)
+            for key in (
+                "python_version",
+                "numpy_version",
+                "torch_version",
+                "cuda_version",
+                "gpu_name",
+                "transformers_version",
+                "datasets_version",
+            )
+        },
+        "dtype": cfg.dtype,
+        "attn_implementation": cfg.attn_implementation,
+        "max_input_length": cfg.max_input_length,
+        "generation": cfg.generation.to_dict(),
+        "max_decision_steps": cfg.max_decision_steps,
+        "prompt_hashes": prompts.hashes,
+    }
+    encoded = json.dumps(
+        payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def build_engine(cfg: ExperimentConfig) -> HFEngine:
@@ -41,7 +91,7 @@ def build_engine(cfg: ExperimentConfig) -> HFEngine:
 def run_experiment(
     cfg: ExperimentConfig,
     questions: List[Any],
-    engine: HFEngine,
+    engine: ModelEngine,
     environment_info: Dict[str, Any],
     prompts: PromptSet,
     runs_path: Path,
@@ -53,7 +103,8 @@ def run_experiment(
     runs_path.parent.mkdir(parents=True, exist_ok=True)
 
     completed: List[Dict[str, Any]] = []
-    total_pairs = len(questions) * cfg.runs_per_question
+    cfg.validate()
+    total_pairs = len(questions) * len(cfg.run_seeds)
     skipped = 0
     run_start = time.time()
 
@@ -69,8 +120,25 @@ def run_experiment(
 
     for question in questions:
         for run_index, run_seed in enumerate(cfg.run_seeds):
-            run_id = f"{question['question_id']}-run-{run_index:02d}"
+            run_id = f"{question['question_id']}-seed-{run_seed}"
+            fingerprint = run_fingerprint(
+                cfg,
+                question,
+                run_index,
+                run_seed,
+                prompts,
+                engine_info,
+                environment_info,
+            )
             if writer.contains(run_id):
+                existing = writer.get(run_id) or {}
+                existing_fingerprint = existing.get("run_fingerprint")
+                if existing_fingerprint != fingerprint:
+                    raise RuntimeError(
+                        f"existing run {run_id} has a different or missing "
+                        "run_fingerprint; use a new experiment_version/output "
+                        "directory instead of mixing configurations"
+                    )
                 skipped += 1
                 tqdm.write(f"skip existing run: {run_id}")
                 continue
@@ -78,6 +146,7 @@ def run_experiment(
             record = orchestrator.run_one(
                 question, run_index, run_seed, run_id
             )
+            record["run_fingerprint"] = fingerprint
             writer.append(record)
             completed.append(record)
             elapsed = time.time() - started
@@ -94,7 +163,7 @@ def run_experiment(
         f"done: {len(completed)} new runs, {skipped} skipped, "
         f"{total_elapsed:.1f}s total"
     )
-    if completed and not skip_report:
+    if writer.existing_ids and not skip_report:
         write_report(runs_path, runs_path.parent)
     return completed
 

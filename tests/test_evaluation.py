@@ -25,8 +25,9 @@ def test_normalize_answer_fixes_whitespace():
 
 
 def test_f1_partial_overlap():
-    # Official example shape: 3 shared tokens out of 4/4 -> 0.75.
-    assert abs(f1_score("This is my answer", "This is the answer") - 0.75) < 1e-9
+    # Official normalization removes "the": precision=3/4, recall=3/3,
+    # hence F1=6/7.
+    assert abs(f1_score("This is my answer", "This is the answer") - 6 / 7) < 1e-9
 
 
 def test_f1_no_overlap_is_zero():

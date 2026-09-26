@@ -136,7 +136,7 @@ def _per_question_stats(
             {
                 "question_id": question_id,
                 "question": first["question"],
-                "gold_answer": first["answer"],
+                "gold_answer": first["gold_answer"],
                 "question_type": first["question_type"],
                 "num_runs": len(group),
                 "f1": _mean_std([r["f1"] for r in group]),

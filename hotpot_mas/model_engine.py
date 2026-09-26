@@ -8,8 +8,7 @@ experiment shares ONE frozen model instance across the three logical agents.
 - builds each call's input with the model's own chat template
   (``apply_chat_template``), so input tokens are counted with the REAL
   Gemma tokenizer;
-- re-seeds PyTorch with the run seed before every generation call so sampled
-  output does not depend on call order;
+- re-seeds PyTorch with the per-agent, per-call seed supplied by ``Agent``;
 - counts generated tokens as ``len(output_ids[prompt_len:])``, which
   includes any EOS token the model emits.
 
@@ -41,6 +40,7 @@ class GenerationResult:
     finish_reason: str  # "eos" | "length" (mock always "eos")
     generation_cap_reached: bool
     tokenizer_name: str
+    generation_seed: int
     engine: str = "hf"  # "hf" | "mock"
 
 
@@ -91,6 +91,9 @@ class HFEngine(ModelEngine):
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name, revision=tokenizer_revision
         )
+        self.tokenizer_revision = self.tokenizer.init_kwargs.get(
+            "_commit_hash", tokenizer_revision
+        )
         load_kwargs: Dict[str, Any] = {}
         if attn_implementation:
             load_kwargs["attn_implementation"] = attn_implementation
@@ -98,6 +101,8 @@ class HFEngine(ModelEngine):
             load_kwargs["torch_dtype"] = torch.float16
         elif dtype == "bfloat16":
             load_kwargs["torch_dtype"] = torch.bfloat16
+        elif dtype == "float32":
+            load_kwargs["torch_dtype"] = torch.float32
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name, revision=model_revision, **load_kwargs
         )
@@ -136,7 +141,7 @@ class HFEngine(ModelEngine):
     ) -> GenerationResult:
         import torch
 
-        # Same seed before every call: output does not depend on call order.
+        # Agent supplies a stable seed derived from run/speaker/call index.
         seed_torch(seed)
 
         token_ids = self.tokenizer.apply_chat_template(
@@ -192,6 +197,7 @@ class HFEngine(ModelEngine):
             finish_reason=finish_reason,
             generation_cap_reached=generation_cap_reached,
             tokenizer_name=self.model_name,
+            generation_seed=seed,
         )
 
     def info(self) -> Dict[str, Any]:
@@ -199,6 +205,7 @@ class HFEngine(ModelEngine):
             "model_name": self.model_name,
             "engine": "transformers.generate",
             "model_revision": self.model_revision,
+            "tokenizer_revision": self.tokenizer_revision,
             "dtype": self.resolved_dtype,
             "attn_implementation": self.resolved_attn,
             "device": self.device_name,
@@ -267,6 +274,7 @@ class MockEngine(ModelEngine):
             finish_reason="length" if capped else "eos",
             generation_cap_reached=capped,
             tokenizer_name="mock-whitespace-splitter",
+            generation_seed=seed,
             engine="mock",
         )
         call = MockCall(speaker=speaker, seed=seed, messages=messages, result=result)

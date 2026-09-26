@@ -89,6 +89,13 @@ def test_forced_final_after_cap_keeps_steps_at_20(run_with_mock):
     assert "decision_cap_reached" in subtypes
     assert "forced_final_instruction" in subtypes
     assert all(e["generated_tokens"] == 0 for e in _controller_events(record))
+    # The real Gemma template requires strict role alternation.  The worker
+    # reply and controller instruction are both user-visible, so Agent must
+    # coalesce them without dropping either text.
+    forced_call = engine.calls_by_speaker["celab"][-1]
+    roles = [message["role"] for message in forced_call.messages[1:]]
+    assert all(a != b for a, b in zip(roles, roles[1:]))
+    assert "maximum number of interaction steps" in forced_call.messages[-1]["content"]
 
 
 def test_forced_final_tokens_are_counted(run_with_mock):
@@ -190,6 +197,16 @@ def test_total_generated_tokens_equals_event_sum(run_with_mock):
     assert record["generated_tokens_alice"] == by_agent.get("alice", 0)
     assert record["generated_tokens_bob"] == by_agent.get("bob", 0)
     assert record["generated_tokens_celab"] == by_agent.get("celab", 0)
+
+
+def test_each_agent_call_has_independent_reproducible_seed(run_with_mock):
+    record, engine = run_with_mock(run_seed=7)
+    seeds = [call.seed for call in engine.calls]
+    assert len(seeds) == len(set(seeds))
+    assert [e["generation_seed"] for e in _model_events(record)] == seeds
+
+    _, engine2 = run_with_mock(run_seed=7)
+    assert [call.seed for call in engine2.calls] == seeds
 
 
 def test_engine_exception_is_recorded_as_error_termination(run_with_mock):

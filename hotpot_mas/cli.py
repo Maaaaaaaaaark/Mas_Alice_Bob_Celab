@@ -39,7 +39,11 @@ def _cmd_prepare_questions(args: argparse.Namespace) -> None:
     cfg = _load_config(args)
     print(f"loading HotpotQA {cfg.dataset}/{cfg.dataset_config} "
           f"{cfg.dataset_split} ...")
-    rows = load_hotpotqa_validation(cfg.dataset_config)
+    rows = load_hotpotqa_validation(
+        dataset_config=cfg.dataset_config,
+        dataset_name=cfg.dataset,
+        split=cfg.dataset_split,
+    )
     print(f"loaded {len(rows)} rows")
     manifest = build_manifest(
         rows,
@@ -104,10 +108,17 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["smoke", "small", "full"],
         help="run mode from the config (overrides questions/runs/seeds)",
     )
-    run.add_argument("--questions", type=int, help="override num_questions")
-    run.add_argument("--runs", type=int, help="override runs_per_question")
     run.add_argument(
-        "--seeds", help="comma-separated run seed list (0,1,2)"
+        "--questions", dest="num_questions", type=int,
+        help="override num_questions",
+    )
+    run.add_argument(
+        "--runs", dest="runs_per_question", type=int,
+        help="override runs_per_question (uses the first N configured seeds)",
+    )
+    run.add_argument(
+        "--seeds", dest="run_seeds",
+        help="comma-separated run seed list (0,1,2)"
     )
     run.set_defaults(func=_cmd_run)
 

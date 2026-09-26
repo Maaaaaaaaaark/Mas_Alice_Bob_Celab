@@ -10,18 +10,27 @@ from typing import Any, Dict
 from hotpot_mas.logging_io import JsonlWriter, load_runs
 
 REQUIRED_KEYS = {
+    "experiment_id", "experiment_version", "dataset", "dataset_split",
     "run_id", "question_id", "run_index", "run_seed", "sample_selection_seed",
+    "model_name", "model_revision", "tokenizer_revision", "generation_config",
     "question", "gold_answer", "question_type", "supporting_titles",
     "private_evidence_alice", "private_evidence_bob",
+    "alice_private_context", "bob_private_context", "dataset_metadata",
+    "supporting_facts", "partition_metadata",
     "prompt_version", "prompt_hashes", "config", "environment", "engine_info",
     "events", "decision_steps", "cap_reached", "decision_cap_reached",
     "generation_cap_reached", "forced_final_calls", "natural_termination",
-    "termination_reason", "final_answer", "parse_status", "parse_error",
-    "f1", "em", "num_alice_queries", "num_bob_queries",
+    "termination_reason", "final_raw_output", "final_answer",
+    "final_answer_extracted", "parse_status", "parse_error",
+    "f1", "em", "answer_f1", "answer_em",
+    "num_alice_queries", "num_bob_queries", "num_total_queries",
     "num_alice_responses", "num_bob_responses", "num_messages",
     "input_tokens_alice", "input_tokens_bob", "input_tokens_celab",
+    "alice_input_tokens", "bob_input_tokens", "celab_input_tokens",
+    "total_input_tokens",
     "input_tokens_total", "generated_tokens_alice", "generated_tokens_bob",
     "generated_tokens_celab", "total_generated_tokens", "total_model_tokens",
+    "alice_generated_tokens", "bob_generated_tokens", "celab_generated_tokens",
     "generation_cap_agents", "generation_cap_events",
     "duration_seconds", "error",
 }
@@ -30,7 +39,7 @@ EVENT_KEYS = {
     "event_index", "event_type", "decision_step", "speaker", "recipient",
     "message_id", "raw_output", "parsed_action", "parsed_body",
     "parse_status", "parse_error", "input_tokens", "generated_tokens",
-    "finish_reason", "generation_cap_reached", "forced_final",
+    "generation_seed", "finish_reason", "generation_cap_reached", "forced_final",
     "controller_subtype", "visible_history_message_ids",
 }
 
@@ -48,6 +57,7 @@ def test_run_record_schema_is_complete(run_with_mock):
             assert isinstance(event["visible_history_message_ids"], list)
             assert isinstance(event["message_id"], str)
             assert event["message_id"]
+            assert isinstance(event["generation_seed"], int)
     # Controller events carry zero tokens and a subtype.
     for event in record["events"]:
         if event["event_type"] == "controller":
@@ -141,6 +151,8 @@ class TestJsonlWriter:
         assert not writer.contains("trunca")
         runs = load_runs(path)
         assert len(runs) == 1
+        writer.append(_make_record("b"))
+        assert [r["run_id"] for r in load_runs(path)] == ["a", "b"]
 
     def test_missing_file_starts_empty(self, tmp_path: Path):
         writer = JsonlWriter(tmp_path / "nope.jsonl")

@@ -204,6 +204,9 @@ class HFEngine(ModelEngine):
         return {
             "model_name": self.model_name,
             "engine": "transformers.generate",
+            "model_class": type(self.model).__name__,
+            "model_type": getattr(self.model.config, "model_type", None),
+            "num_parameters": int(self.model.num_parameters()),
             "model_revision": self.model_revision,
             "tokenizer_revision": self.tokenizer_revision,
             "dtype": self.resolved_dtype,

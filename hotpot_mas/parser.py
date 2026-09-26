@@ -9,15 +9,16 @@ occurs exactly once:
 - ``<FINAL>...</FINAL>`` -> final answer (inner text is the prediction)
 
 Anything else is a parse error. The scheduler must not guess the routing
-target, rewrite the output, retry, or repair the format (spec sec. 7).
-Markers are case-sensitive and incomplete markers do not match. Worker
-outputs are never parsed; marker-looking text inside a worker reply has no
-effect on routing or termination.
+target, rewrite the output, or retry (spec sec. 7). Markers are
+case-sensitive. Worker outputs are never parsed; marker-looking text inside
+a worker reply has no effect on routing or termination.
 
 Design choices recorded here: a repeated marker of the same type is treated
 as ambiguous (parse error); ``<FINAL></FINAL>`` is a *valid* final with an
-empty prediction (evaluated as empty, distinct from a parse error, which
-yields ``final_answer = null``).
+empty prediction. Experiment v4 additionally accepts exactly one unclosed
+``<FINAL>`` marker, with no routing/closing marker, and treats the remainder
+of the output as the answer. This fallback is explicitly logged rather than
+silently presented as a normally closed final.
 """
 
 from __future__ import annotations
@@ -29,23 +30,27 @@ from typing import Optional
 TO_ALICE_RE = re.compile(r"<TO>ALICE</TO>")
 TO_BOB_RE = re.compile(r"<TO>BOB</TO>")
 FINAL_RE = re.compile(r"<FINAL>(.*?)</FINAL>", re.DOTALL)
+FINAL_OPEN = "<FINAL>"
+FINAL_CLOSE = "</FINAL>"
 
 
 @dataclass
 class ParseResult:
     action: Optional[str]  # "ask_alice" | "ask_bob" | "final" | None
     body: Optional[str]  # inner <FINAL> text when action == "final"
-    status: str  # "ok" | "error"
+    status: str  # "ok" | "ok_unclosed_final_fallback" | "error"
     error: Optional[str]
 
 
 def parse_celab_output(text: str) -> ParseResult:
     """Parse one Celab output into exactly one action, or a parse error."""
     final_bodies = FINAL_RE.findall(text)
+    final_open_count = text.count(FINAL_OPEN)
+    final_close_count = text.count(FINAL_CLOSE)
     counts = {
         "ask_alice": len(TO_ALICE_RE.findall(text)),
         "ask_bob": len(TO_BOB_RE.findall(text)),
-        "final": len(final_bodies),
+        "final": final_open_count,
     }
     present = [(action, count) for action, count in counts.items() if count > 0]
     if not present:
@@ -73,17 +78,38 @@ def parse_celab_output(text: str) -> ParseResult:
             f"action marker {action!r} occurs {count} times (ambiguous)",
         )
     if action == "final":
-        body = final_bodies[0].strip()
-        return ParseResult("final", body, "ok", None)
+        if final_open_count != 1:
+            return ParseResult(
+                None,
+                None,
+                "error",
+                f"<FINAL> opening marker occurs {final_open_count} times "
+                "(ambiguous)",
+            )
+        if final_close_count == 1 and len(final_bodies) == 1:
+            body = final_bodies[0].strip()
+            return ParseResult("final", body, "ok", None)
+        if final_close_count == 0:
+            body = text.split(FINAL_OPEN, 1)[1].strip()
+            return ParseResult(
+                "final", body, "ok_unclosed_final_fallback", None
+            )
+        return ParseResult(
+            None,
+            None,
+            "error",
+            "malformed <FINAL> structure: expected exactly one closing "
+            "</FINAL> marker or no closing marker for the logged fallback",
+        )
     return ParseResult(action, None, "ok", None)
 
 
 def extract_final_answer(text: str) -> ParseResult:
     """Final-answer extraction for the forced-final output.
 
-    Only a uniquely parseable ``<FINAL>...</FINAL>`` counts. A ``<TO>``
-    marker (or anything else) in the forced-final output is a failure and
-    yields ``final_answer = null`` (spec sec. 9.3).
+    A unique closed final, or the explicitly logged v4 unclosed-final
+    fallback, counts. A ``<TO>`` marker (or anything else) in the
+    forced-final output is a failure and yields ``final_answer = null``.
     """
     result = parse_celab_output(text)
     if result.action == "final":

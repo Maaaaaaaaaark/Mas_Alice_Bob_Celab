@@ -36,7 +36,8 @@ class Event:
     raw_output: Optional[str] = None
     parsed_action: Optional[str] = None  # "ask_alice" | "ask_bob" | "final" | None
     parsed_body: Optional[str] = None
-    parse_status: str = "not_parsed"  # "ok" | "error" | "not_parsed"
+    # "ok" | "ok_unclosed_final_fallback" | "error" | "not_parsed"
+    parse_status: str = "not_parsed"
     parse_error: Optional[str] = None
     input_tokens: int = 0
     generated_tokens: int = 0

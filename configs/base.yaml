@@ -1,8 +1,8 @@
-# Base experiment configuration (HotpotQA 3-agent MAS, v1).
+# Base experiment configuration (HotpotQA 3-agent MAS, experiment v4).
 # All relative paths are resolved against the repository root.
 
 experiment_id: hotpotqa_base_mas
-experiment_version: v3
+experiment_version: v4
 
 dataset: hotpot_qa
 dataset_config: distractor

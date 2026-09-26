@@ -46,6 +46,41 @@ def test_final_matches_across_newlines():
     assert result.body == "line one\nline two"
 
 
+def test_unclosed_final_uses_logged_fallback_to_end_of_output():
+    result = parse_celab_output("Celab: <FINAL>October 1922")
+    assert result.status == "ok_unclosed_final_fallback"
+    assert result.action == "final"
+    assert result.body == "October 1922"
+    assert result.error is None
+
+
+def test_unclosed_empty_final_is_valid_empty_fallback():
+    result = parse_celab_output("Celab: <FINAL>   ")
+    assert result.status == "ok_unclosed_final_fallback"
+    assert result.action == "final"
+    assert result.body == ""
+
+
+def test_unclosed_final_mixed_with_route_is_ambiguous():
+    result = parse_celab_output(
+        "Celab: <TO>ALICE</TO> ask first <FINAL>premature answer"
+    )
+    assert result.status == "error"
+    assert result.action is None
+
+
+def test_repeated_unclosed_final_is_ambiguous():
+    result = parse_celab_output("Celab: <FINAL>one <FINAL>two")
+    assert result.status == "error"
+    assert result.action is None
+
+
+def test_orphan_final_close_is_not_accepted():
+    result = parse_celab_output("Celab: answer</FINAL>")
+    assert result.status == "error"
+    assert result.action is None
+
+
 def test_no_marker_is_parse_error():
     result = parse_celab_output("Celab: I have no idea what to do")
     assert result.status == "error"
@@ -85,6 +120,12 @@ def test_markers_are_case_sensitive():
 def test_extract_final_answer_accepts_unique_final():
     result = extract_final_answer("Celab: <FINAL>x</FINAL>")
     assert result.status == "ok"
+    assert result.body == "x"
+
+
+def test_extract_final_answer_accepts_unclosed_fallback():
+    result = extract_final_answer("Celab: <FINAL>x")
+    assert result.status == "ok_unclosed_final_fallback"
     assert result.body == "x"
 
 

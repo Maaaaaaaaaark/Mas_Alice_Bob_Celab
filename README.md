@@ -7,7 +7,7 @@ model.
 
 The single source of truth for the experimental design is
 [hotpotqa_base_mas_experiment_spec.md](hotpotqa_base_mas_experiment_spec.md)
-(v1.1). `references/` contains OPTIMA paper code that is reference-only;
+(v1.2). `references/` contains OPTIMA paper code that is reference-only;
 where the two conflict, the spec always wins. This implementation never
 reproduces OPTIMA protocols (no two-agent alternation, no `<A>` termination,
 no token-pressure prompts, no reward/PPL/DPO/SFT training, no distractor
@@ -19,7 +19,7 @@ injection).
 
 ```
 D:\Base_Experiment_hotpot_mas\
-├── hotpotqa_base_mas_experiment_spec.md  # spec v1.1 (single source of truth, unmodified)
+├── hotpotqa_base_mas_experiment_spec.md  # spec v1.2 (single source of truth)
 ├── README_FOR_AGENT.md                   # spec-authority notice (unmodified)
 ├── README.md                             # this file
 ├── requirements.txt                      # pinned minimum versions
@@ -60,7 +60,7 @@ D:\Base_Experiment_hotpot_mas\
 │   └── test_logging.py                   # spec sec. 15 schema, token-sum consistency, resume
 └── outputs/                              # created at runtime (gitignored)
     ├── question_manifest.json            # fixed 100 questions + partitions + rules + sha256
-    └── hotpotqa_base_mas/v3/
+    └── hotpotqa_base_mas/v4/
         ├── runs.jsonl                    # 1000 run records, one JSON object per line
         ├── summary_run_level.json        # mean/std over all runs + all rates
         ├── summary_per_question.json     # per-question means/stds
@@ -103,7 +103,7 @@ python -m hotpot_mas.cli run --config configs/base.yaml --mode full
 pytest tests/
 
 # Re-generate the report from an existing runs.jsonl
-python -m hotpot_mas.cli report --runs outputs/hotpotqa_base_mas/v3/runs.jsonl
+python -m hotpot_mas.cli report --runs outputs/hotpotqa_base_mas/v4/runs.jsonl
 ```
 
 CLI overrides for `run`: `--questions N`, `--runs N`, `--seeds 0,1,2`.
@@ -113,11 +113,11 @@ CLI overrides for `run`: `--questions N`, `--runs N`, `--seeds 0,1,2`.
 | Artifact | Path |
 |---|---|
 | Question manifest | `outputs/question_manifest.json` |
-| Raw run log (1000 records) | `outputs/hotpotqa_base_mas/v3/runs.jsonl` |
-| Run-level summary | `outputs/hotpotqa_base_mas/v3/summary_run_level.json` |
-| Per-question summary | `outputs/hotpotqa_base_mas/v3/summary_per_question.json` |
-| Dataset summary | `outputs/hotpotqa_base_mas/v3/summary_dataset.json` |
-| Human-readable report | `outputs/hotpotqa_base_mas/v3/report.md` |
+| Raw run log (1000 records) | `outputs/hotpotqa_base_mas/v4/runs.jsonl` |
+| Run-level summary | `outputs/hotpotqa_base_mas/v4/summary_run_level.json` |
+| Per-question summary | `outputs/hotpotqa_base_mas/v4/summary_per_question.json` |
+| Dataset summary | `outputs/hotpotqa_base_mas/v4/summary_dataset.json` |
+| Human-readable report | `outputs/hotpotqa_base_mas/v4/report.md` |
 
 Each `runs.jsonl` line is a full run record per spec sec. 15: run identity,
 question + private evidence, prompt version/hashes, resolved config,
@@ -132,7 +132,8 @@ From `report.md` / the JSON summaries (spec sec. 16): F1/EM mean ± std;
 generated tokens per agent and total (primary efficiency metric,
 `total_generated_tokens`); input tokens (auxiliary); decision steps; Alice
 and Bob query counts; message counts; Cap Rate; Generation Cap Rate;
-Natural Termination Rate; Parse Error Rate; Forced Final Rate; Error Rate;
+Natural Termination Rate; Parse Error Rate; Forced Final Rate; Unclosed Final
+Fallback Rate; Error Rate;
 termination-reason distribution; dataset-level stats over per-question
 means; a consistency check that `total_generated_tokens` equals the sum of
 `model_generation` event tokens for every run.
@@ -170,10 +171,12 @@ means; a consistency check that `total_generated_tokens` equals the sum of
    delivered verbatim to the receiver's history; worker outputs are never
    parsed, so marker-looking text inside worker replies has no effect.
 6. **Parser uniqueness**: a Celab output must contain exactly one action
-   type (`<TO>ALICE</TO>`, `<TO>BOB</TO>`, `<FINAL>...</FINAL>`) and that
-   marker exactly once. A repeated same-type marker is ambiguous ->
-   parse error. `<FINAL></FINAL>` is a valid final with an empty prediction.
-   Case-sensitive; incomplete markers do not match.
+   type (`<TO>ALICE</TO>`, `<TO>BOB</TO>`, or `<FINAL>`), and that marker
+   exactly once. A normally closed `<FINAL>...</FINAL>` extracts only its
+   inner text. In experiment v4, exactly one unclosed `<FINAL>` with no
+   route marker extracts the remainder through EOS and is explicitly logged
+   as `ok_unclosed_final_fallback` / `final_parse_fallback=true`. Repeated or
+   mixed markers remain parse errors. Matching is case-sensitive.
 7. **Decision steps**: every Celab call in the normal interaction phase
    counts +1 (including the final call and any parse-error call); worker
    replies do not count; the forced-final call does not count (steps stay

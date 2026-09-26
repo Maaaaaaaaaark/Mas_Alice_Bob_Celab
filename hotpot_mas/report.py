@@ -100,6 +100,9 @@ def _run_level_stats(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
             # separately in termination_reason_counts).
             "parse_error_rate": _rate_term_reason(runs, "parse_error"),
             "forced_final_rate": _rate(runs, "forced_final_calls"),
+            "unclosed_final_fallback_rate": _rate(
+                runs, "final_parse_fallback"
+            ),
             "error_rate": _rate_term_reason(runs, "error"),
         },
         "termination_reason_counts": _termination_counts(runs),
@@ -242,6 +245,7 @@ def _markdown_report(
         ("natural_termination_rate", "Natural Termination Rate"),
         ("parse_error_rate", "Parse Error Rate"),
         ("forced_final_rate", "Forced Final Rate"),
+        ("unclosed_final_fallback_rate", "Unclosed Final Fallback Rate"),
         ("error_rate", "Error Rate"),
     ]:
         entry = rates[name]

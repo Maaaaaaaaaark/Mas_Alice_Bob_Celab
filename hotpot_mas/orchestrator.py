@@ -211,6 +211,7 @@ class Orchestrator:
         termination_reason: Optional[str] = None
         final_answer: Optional[str] = None
         final_raw_output: Optional[str] = None
+        final_parse_fallback = False
         parse_status = "not_parsed"
         parse_error: Optional[str] = None
         error_message: Optional[str] = None
@@ -296,7 +297,10 @@ class Orchestrator:
                     break
 
                 if parsed.action == "final":
-                    parse_status = "ok"
+                    parse_status = parsed.status
+                    final_parse_fallback = (
+                        parsed.status == "ok_unclosed_final_fallback"
+                    )
                     final_answer = parsed.body
                     final_raw_output = result.raw_output
                     natural_termination = True
@@ -308,7 +312,7 @@ class Orchestrator:
                         celab_message_id,
                         parsed_action="final",
                         parsed_body=parsed.body,
-                        parse_status="ok",
+                        parse_status=parsed.status,
                     )
                     break
 
@@ -398,10 +402,13 @@ class Orchestrator:
                 final_raw_output = result.raw_output
                 celab_message_id = celab.next_message_id()
                 forced_parse = extract_final_answer(result.raw_output)
-                if forced_parse.status == "ok":
+                if forced_parse.status != "error":
                     final_answer = forced_parse.body
                     termination_reason = "forced_final"
-                    parse_status = "ok"
+                    parse_status = forced_parse.status
+                    final_parse_fallback = (
+                        forced_parse.status == "ok_unclosed_final_fallback"
+                    )
                 else:
                     termination_reason = "forced_final_parse_failure"
                     parse_status = "error"
@@ -412,12 +419,14 @@ class Orchestrator:
                     decision_steps,
                     celab_message_id,
                     parsed_action=(
-                        "final" if forced_parse.status == "ok" else None
+                        "final" if forced_parse.status != "error" else None
                     ),
                     parsed_body=(
-                        forced_parse.body if forced_parse.status == "ok" else None
+                        forced_parse.body
+                        if forced_parse.status != "error"
+                        else None
                     ),
-                    parse_status="ok" if forced_parse.status == "ok" else "error",
+                    parse_status=forced_parse.status,
                     parse_error=forced_parse.error,
                     forced_final=True,
                 )
@@ -460,6 +469,7 @@ class Orchestrator:
                 "final_raw_output": final_raw_output,
                 "final_answer": final_answer,
                 "final_answer_extracted": final_answer,
+                "final_parse_fallback": final_parse_fallback,
                 "parse_status": parse_status,
                 "parse_error": parse_error,
                 "f1": f1,

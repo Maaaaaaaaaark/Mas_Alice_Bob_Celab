@@ -42,6 +42,20 @@ def test_natural_run_counts_decision_steps(run_with_mock):
     assert steps == [1, 1, 2, 2, 3]
 
 
+def test_natural_unclosed_final_uses_audited_fallback(run_with_mock):
+    record, _ = run_with_mock(
+        scripts={"celab": ["Celab: <FINAL>The Connector Bridge"]}
+    )
+    assert record["termination_reason"] == "natural_final"
+    assert record["natural_termination"] is True
+    assert record["final_answer"] == "The Connector Bridge"
+    assert record["parse_status"] == "ok_unclosed_final_fallback"
+    assert record["final_parse_fallback"] is True
+    assert record["em"] == 1.0
+    final_event = _model_events(record)[0]
+    assert final_event["parse_status"] == "ok_unclosed_final_fallback"
+
+
 def test_worker_replies_do_not_increment_decision_steps(run_with_mock):
     scripts = {
         "celab": ["Celab: <TO>ALICE</TO> q1", "Celab: <TO>ALICE</TO> q2",
@@ -124,6 +138,20 @@ def test_forced_final_parse_failure_gives_null_answer(run_with_mock):
     # The unparseable forced output is still counted in tokens.
     forced = [e for e in _model_events(record) if e["forced_final"]][0]
     assert forced["generated_tokens"] > 0
+
+
+def test_forced_unclosed_final_uses_audited_fallback(run_with_mock):
+    scripts = _ask_scripts(20, "alice")
+    scripts["celab"].append("Celab: <FINAL>The Connector Bridge")
+    record, _ = run_with_mock(scripts=scripts)
+    assert record["termination_reason"] == "forced_final"
+    assert record["natural_termination"] is False
+    assert record["final_answer"] == "The Connector Bridge"
+    assert record["parse_status"] == "ok_unclosed_final_fallback"
+    assert record["final_parse_fallback"] is True
+    assert record["em"] == 1.0
+    forced = [e for e in _model_events(record) if e["forced_final"]]
+    assert forced[0]["parse_status"] == "ok_unclosed_final_fallback"
 
 
 def test_parse_error_ends_run_without_retry_or_repair(run_with_mock):

@@ -1,6 +1,6 @@
 # HotpotQA 三智能体 Base 实验实现规格
 
-> 版本：v1.1  
+> 版本：v1.2
 > 用途：供编码 Agent 直接实现第一阶段实验  
 > 状态：本文只写入当前已经确认的 Base 设定；扩展实验统一列在“暂不实现”部分。
 
@@ -35,7 +35,7 @@
 | Agent 关系 | 三个独立 Agent instance |
 | 通信方式 | 自由自然语言通信；v1 调度实现为顺序、异步 |
 | 最大正常 decision steps | 20 |
-| 正常终止标记 | `<FINAL>answer</FINAL>` |
+| 正常终止标记 | 首选 `<FINAL>answer</FINAL>`；v4 兼容未闭合 `<FINAL>answer` |
 | 主效果指标 | HotpotQA Answer F1 |
 | 辅助效果指标 | Answer EM |
 | 主效率指标 | Total Generated Tokens (`#GenTok`) |
@@ -251,12 +251,12 @@ Celab: <FINAL>answer</FINAL>
 
 每条消息必须显式表明 speaker identity。按照当前要求，prompt 应要求模型输出自己的 `Alice:`、`Bob:` 或 `Celab:` 前缀；日志层同时必须独立保存结构化 `speaker` 字段，不能只依赖文本前缀判断说话者。
 
-路由 parser 只承担调度所需的最小解析工作：识别 `<TO>ALICE</TO>`、`<TO>BOB</TO>` 或 `<FINAL>...</FINAL>`。不要对消息正文增加词数限制、句式限制、事实格式或策略限制，也不要对中间消息的正确性打分。
+路由 parser 只承担调度所需的最小解析工作：识别 `<TO>ALICE</TO>`、`<TO>BOB</TO>` 或 `<FINAL>...</FINAL>`。v4 增加一个显式兼容规则：若 Celab 输出恰有一个 `<FINAL>` 开标记、没有 `</FINAL>`、也没有任何路由标记，则从 `<FINAL>` 后提取至生成输出末尾（EOS）作为答案。该情况必须记录为 `parse_status = "ok_unclosed_final_fallback"` 和 `final_parse_fallback = true`，不能伪装成正常闭合格式。不要对消息正文增加词数限制、句式限制、事实格式或策略限制，也不要对中间消息的正确性打分。
 
-无法解析 Celab 输出时，默认不进行自动格式修复：
+除上述唯一、可确定的未闭合 final fallback 外，无法解析 Celab 输出时不进行自动格式修复：
 
 - 保存未经修改的 raw output，并记录 `parse_status` 和 `parse_error`。
-- v1 调度器一次执行一个可唯一识别的动作；无法唯一识别时，不猜测路由目标、不静默改写输出。
+- v1 调度器一次执行一个可唯一识别的动作；无法唯一识别时，不猜测路由目标、不静默改写输出。重复 `<FINAL>`、同时出现 route 与 final、只有 `</FINAL>` 或其他畸形结构仍是 parse error。
 - v1 的最小失败处理为结束当前 run，记录 `termination_reason = "parse_error"`、`natural_termination = false`、`final_answer = null`；F1/EM 按官方 evaluator 对空预测处理。该次实际调用的 input/output tokens 和正常 decision step 仍照常计入。
 - 解析错误本身不触发重试、格式修复提示或 forced final；记录并持久化失败，不将其静默丢弃。第 9 节的 20-step cap forced final 保持独立，解析失败结束的 run 不再进入该流程。
 - 如以后采用其他 retry/failure handling，须另行明确并记录配置与实验版本，不能作为 Base 默认行为隐式加入。
@@ -313,7 +313,7 @@ decision_steps = num_total_queries + 1
 
 ### 9.1 正常终止
 
-当且仅当 Celab 在正常 decision step 中输出可解析的：
+当 Celab 在正常 decision step 中输出可解析的标准格式：
 
 ```text
 <FINAL>answer</FINAL>
@@ -326,6 +326,10 @@ termination_reason = "natural_final"
 natural_termination = true
 cap_reached = false
 ```
+
+v4 中，满足第 7.4 节严格条件的未闭合 `<FINAL>answer` 也以
+`termination_reason = "natural_final"` 结束，但通过
+`final_parse_fallback = true` 和专用 parse status 与标准闭合输出区分。
 
 Alice 或 Bob 输出 `<FINAL>` 不得终止整个 trajectory。
 
@@ -360,6 +364,7 @@ natural_termination = false
 - 单独记录 `forced_final_calls = 1`。
 - 其 input/output token 仍计入该 run 的 token 总量，因为它真实发生了推理与生成。
 - 保存 raw forced-final output 和解析状态。
+- 标准闭合 final 或第 7.4 节定义的未闭合 final fallback 均可提取；fallback 必须单独记录。
 - 若仍无法提取 final，令 `final_answer = null`，F1/EM 按官方 evaluator 对空预测处理，并记录 `termination_reason = "forced_final_parse_failure"`。
 
 强制提示词必须固定，不能根据题目或轨迹人工改写。
@@ -534,7 +539,7 @@ total_model_tokens = total_input_tokens + total_generated_tokens
 
 ### 13.1 Answer extraction
 
-只从 Celab 的最终输出中提取 `<FINAL>` 与 `</FINAL>` 之间的文本：
+标准情况下，只从 Celab 的最终输出中提取 `<FINAL>` 与 `</FINAL>` 之间的文本：
 
 ```text
 Celab: <FINAL>Canada</FINAL>
@@ -542,12 +547,17 @@ Celab: <FINAL>Canada</FINAL>
 prediction = "Canada"
 ```
 
+v4 fallback 情况下，若且仅若输出恰有一个 `<FINAL>` 开标记、无闭标记、
+且无路由标记，则提取开标记之后直到生成末尾的文本。该规则不补写标签、
+不改变 raw output，也不接受没有 `<FINAL>` 的普通文本。
+
 不得把 Celab 的整段输出或中间推理作为预测答案。保存：
 
 ```text
 final_raw_output
 final_answer_extracted
 final_parse_status
+final_parse_fallback
 ```
 
 ### 13.2 Answer normalization
@@ -785,10 +795,10 @@ persist complete run record
 9. 20 步后 forced-final 不把 `decision_steps` 增加到 21，但其 token 被计入总量。
 10. 达到 2048 token 的 generation event 与 decision cap 分开记录。
 11. `total_generated_tokens` 等于所有模型 generation event 的 generated-token 总和。
-12. evaluator 只使用 `<FINAL>` 内容，并与 HotpotQA 官方 normalization/F1 实现一致。
+12. evaluator 只使用标准闭合 `<FINAL>` 的内部内容，或 v4 未闭合 final fallback 中 `<FINAL>` 后至 EOS 的内容，并与 HotpotQA 官方 normalization/F1 实现一致。
 13. 相同 question、seed、配置在可确定的运行环境下能够复现；所有配置差异可从日志识别。
 14. 100 个样本中，每题的两个必要 supporting contexts 被分给不同 worker。
-15. 无法解析 Celab 输出时保留 raw output 和 parse error，不自动修复、重试或 forced final；失败 run 与其已产生的 token 和 decision steps 完整保存。
+15. 验证 v4 未闭合 final fallback 的自然终止与 forced-final 两条路径，并验证 mixed/repeated marker 仍失败；其他无法解析的 Celab 输出保留 raw output 和 parse error，不自动修复、重试或 forced final。
 
 ## 19. 当前明确暂不实现的内容
 

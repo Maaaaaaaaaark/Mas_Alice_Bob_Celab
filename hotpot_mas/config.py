@@ -24,7 +24,7 @@ _KNOWN_KEYS = {
     "engine", "vllm_gpu_memory_utilization", "vllm_enforce_eager",
     "max_input_length", "generation", "max_decision_steps", "prompt_dir",
     "manifest_path", "output_dir", "modes", "architecture",
-    "worker_clarification",
+    "worker_clarification", "share_question_with_workers",
 }
 
 
@@ -104,6 +104,7 @@ class ExperimentConfig:
     generation: GenerationParams = field(default_factory=GenerationParams)
     max_decision_steps: int = 20
     architecture: str = "mas"
+    share_question_with_workers: bool = False
     worker_clarification: WorkerClarificationParams = field(
         default_factory=WorkerClarificationParams
     )
@@ -161,6 +162,9 @@ class ExperimentConfig:
             generation=generation,
             max_decision_steps=int(raw.get("max_decision_steps", 20)),
             architecture=raw.get("architecture", "mas"),
+            share_question_with_workers=bool(
+                raw.get("share_question_with_workers", False)
+            ),
             worker_clarification=clarification,
             prompt_dir=_resolve_path(raw.get("prompt_dir", "prompts")),
             manifest_path=_resolve_path(raw.get("manifest_path", "outputs/question_manifest.json")),
@@ -201,9 +205,14 @@ class ExperimentConfig:
             raise ValueError("the vllm engine in this experiment requires cuda")
         if self.max_decision_steps <= 0:
             raise ValueError("max_decision_steps must be positive")
-        if self.architecture not in {"mas", "centralized_reader"}:
+        if self.architecture not in {
+            "mas",
+            "centralized_reader",
+            "one_shot_gather",
+        }:
             raise ValueError(
-                "architecture must be one of: mas, centralized_reader"
+                "architecture must be one of: mas, centralized_reader, "
+                "one_shot_gather"
             )
         if self.worker_clarification.max_per_worker < 0:
             raise ValueError(
@@ -215,6 +224,13 @@ class ExperimentConfig:
         ):
             raise ValueError(
                 "worker clarification is only supported by the mas architecture"
+            )
+        if (
+            self.architecture == "one_shot_gather"
+            and not self.share_question_with_workers
+        ):
+            raise ValueError(
+                "one_shot_gather requires share_question_with_workers=true"
             )
         if (
             self.worker_clarification.enabled
@@ -306,6 +322,7 @@ class ExperimentConfig:
             "generation": self.generation.to_dict(),
             "max_decision_steps": self.max_decision_steps,
             "architecture": self.architecture,
+            "share_question_with_workers": self.share_question_with_workers,
             "worker_clarification": self.worker_clarification.to_dict(),
             "prompt_dir": str(self.prompt_dir),
             "manifest_path": str(self.manifest_path),

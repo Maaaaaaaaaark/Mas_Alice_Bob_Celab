@@ -8,9 +8,14 @@ leakage, per spec sec. 18.5).
 
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
 from typing import Any, Dict, List
 
 from hotpot_mas.agents import Agent, check_agent_isolation
+from hotpot_mas.model_engine import MockEngine
+from hotpot_mas.orchestrator import Orchestrator
+from hotpot_mas.prompts import PromptSet
 
 from conftest import E_A_MARKER, E_B_MARKER, SAMPLE_QUESTION
 
@@ -111,3 +116,34 @@ def test_histories_are_fully_independent(run_with_mock):
     # Neither worker ever sees the other worker's own messages.
     assert "Bob:" not in alice_all
     assert "Alice:" not in bob_all
+
+
+def test_shared_question_control_exposes_question_but_not_peer_evidence(
+    base_config, sample_question
+):
+    prompts = PromptSet(
+        Path(__file__).resolve().parent.parent / "prompts_shared_question"
+    )
+    engine = MockEngine(scripts=dict(RELAY_SCRIPTS))
+    cfg = replace(base_config, share_question_with_workers=True)
+    record = Orchestrator(cfg, prompts, engine, {}).run_one(
+        sample_question, 0, 0, "shared-question-run"
+    )
+
+    assert record["termination_reason"] == "natural_final"
+    for speaker, own_marker, forbidden_marker in (
+        ("alice", E_A_MARKER, E_B_MARKER),
+        ("bob", E_B_MARKER, E_A_MARKER),
+    ):
+        first_input = _flatten_input(engine.calls_by_speaker[speaker][0])
+        assert SAMPLE_QUESTION["question"] in first_input
+        assert own_marker in first_input
+        assert forbidden_marker not in first_input
+
+
+def test_shared_question_keeps_baseline_celab_prompts_byte_identical():
+    root = Path(__file__).resolve().parent.parent
+    for filename in ("celab_system.txt", "forced_final_instruction.txt"):
+        assert (root / "prompts_shared_question" / filename).read_bytes() == (
+            root / "prompts" / filename
+        ).read_bytes()

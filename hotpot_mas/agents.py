@@ -91,17 +91,22 @@ def make_agents(
     run_seed: int,
     evidence_alice: str,
     evidence_bob: str,
+    question: str = "",
 ) -> Dict[str, Agent]:
     """Create the three independent agents for one run."""
     alice = Agent(
         "alice",
-        prompts.render("alice", private_evidence=evidence_alice),
+        prompts.render(
+            "alice", private_evidence=evidence_alice, question=question
+        ),
         engine,
         run_seed,
     )
     bob = Agent(
         "bob",
-        prompts.render("bob", private_evidence=evidence_bob),
+        prompts.render(
+            "bob", private_evidence=evidence_bob, question=question
+        ),
         engine,
         run_seed,
     )

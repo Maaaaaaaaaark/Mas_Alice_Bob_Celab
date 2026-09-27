@@ -1,4 +1,4 @@
-"""Paired comparison of the MAS baseline, clarification, and direct reader."""
+"""Paired comparisons across MAS controls and the centralized reader."""
 
 from __future__ import annotations
 
@@ -45,7 +45,9 @@ def _validate_matched_content(
 ) -> None:
     for key in common:
         baseline = indexes["baseline"][key]
-        for name in ("clarification", "centralized_reader"):
+        for name in indexes:
+            if name == "baseline":
+                continue
             condition = indexes[name][key]
             for field in ("question", "gold_answer"):
                 if (
@@ -116,18 +118,24 @@ def write_diagnostic_report(
     clarification_path: Path,
     centralized_path: Path,
     output_dir: Path,
+    shared_question_path: Path | None = None,
+    one_shot_path: Path | None = None,
 ) -> Dict[str, Path]:
     """Write an English paired diagnostic report and its JSON payload."""
     groups = {
         "baseline": load_runs(baseline_path),
         "clarification": load_runs(clarification_path),
-        "centralized_reader": load_runs(centralized_path),
     }
+    if shared_question_path is not None:
+        groups["shared_question"] = load_runs(shared_question_path)
+    if one_shot_path is not None:
+        groups["one_shot_gather"] = load_runs(one_shot_path)
+    groups["centralized_reader"] = load_runs(centralized_path)
     _validate_compatibility(groups)
     indexes = {name: _index(runs) for name, runs in groups.items()}
     common = sorted(set.intersection(*(set(index) for index in indexes.values())))
     if not common:
-        raise ValueError("the three diagnostic conditions have no matching runs")
+        raise ValueError("the diagnostic conditions have no matching runs")
     _validate_matched_content(indexes, common)
     matched_indexes = {
         name: {key: index[key] for key in common}
@@ -138,10 +146,43 @@ def write_diagnostic_report(
         for name in groups
     }
     comparisons: Dict[str, Dict[str, Any]] = {}
-    for condition in ("clarification", "centralized_reader"):
+    conditions = [name for name in groups if name != "baseline"]
+    for condition in conditions:
         comparisons[condition] = {
             metric: _bootstrap_question_delta(
                 matched_indexes["baseline"], matched_indexes[condition], metric
+            )
+            for metric in ("f1", "em", "total_generated_tokens")
+        }
+
+    staged_comparisons: Dict[str, Dict[str, Any]] = {}
+    if "shared_question" in matched_indexes:
+        staged_comparisons["question_visibility"] = {
+            metric: _bootstrap_question_delta(
+                matched_indexes["baseline"],
+                matched_indexes["shared_question"],
+                metric,
+            )
+            for metric in ("f1", "em", "total_generated_tokens")
+        }
+    if {
+        "shared_question",
+        "one_shot_gather",
+    }.issubset(matched_indexes):
+        staged_comparisons["fixed_schedule"] = {
+            metric: _bootstrap_question_delta(
+                matched_indexes["shared_question"],
+                matched_indexes["one_shot_gather"],
+                metric,
+            )
+            for metric in ("f1", "em", "total_generated_tokens")
+        }
+    if "one_shot_gather" in matched_indexes:
+        staged_comparisons["centralization"] = {
+            metric: _bootstrap_question_delta(
+                matched_indexes["one_shot_gather"],
+                matched_indexes["centralized_reader"],
+                metric,
             )
             for metric in ("f1", "em", "total_generated_tokens")
         }
@@ -182,6 +223,7 @@ def write_diagnostic_report(
         "matched_question_count": len({key[0] for key in common}),
         "conditions": summaries,
         "paired_comparisons_against_baseline": comparisons,
+        "staged_paired_comparisons": staged_comparisons,
         "diagnosis": diagnosis,
         "diagnosis_rationale": rationale,
         "diagnosis_rule_note": (
@@ -211,8 +253,10 @@ def write_diagnostic_report(
         "baseline": "MAS baseline",
         "clarification": "Worker clarification",
         "centralized_reader": "Centralized reader",
+        "shared_question": "Shared-question MAS",
+        "one_shot_gather": "One-shot gather MAS",
     }
-    for name in ("baseline", "clarification", "centralized_reader"):
+    for name in groups:
         item = summaries[name]
         lines.append(
             f"| {labels[name]} | {int(item['runs'])} | "
@@ -221,7 +265,7 @@ def write_diagnostic_report(
             f"{item['input_tokens']:.1f} | {item['parse_error_rate']:.4f} |"
         )
     lines += ["", "## Paired differences from the MAS baseline", ""]
-    for condition in ("clarification", "centralized_reader"):
+    for condition in conditions:
         lines.append(f"### {labels[condition]}")
         lines.append("")
         for metric in ("f1", "em", "total_generated_tokens"):
@@ -234,6 +278,34 @@ def write_diagnostic_report(
                 f"{item['matched_questions']} questions"
             )
         lines.append("")
+    if staged_comparisons:
+        lines += ["## Staged mechanism comparisons", ""]
+        stage_labels = {
+            "question_visibility": (
+                "Shared-question MAS minus MAS baseline "
+                "(effect of worker question visibility)"
+            ),
+            "fixed_schedule": (
+                "One-shot gather minus shared-question MAS "
+                "(effect of replacing free routing with a fixed schedule)"
+            ),
+            "centralization": (
+                "Centralized reader minus one-shot gather MAS "
+                "(remaining evidence-transfer/centralization gap)"
+            ),
+        }
+        for stage, metrics in staged_comparisons.items():
+            lines.append(f"### {stage_labels[stage]}")
+            lines.append("")
+            for metric in ("f1", "em", "total_generated_tokens"):
+                item = metrics[metric]
+                ci = item["bootstrap_95_ci"]
+                lines.append(
+                    f"- {metric}: mean delta {item['mean_delta']:+.4f}; "
+                    f"question-bootstrap 95% CI "
+                    f"[{ci[0]:+.4f}, {ci[1]:+.4f}]"
+                )
+            lines.append("")
     lines += [
         "## Diagnostic interpretation",
         "",
@@ -244,7 +316,9 @@ def write_diagnostic_report(
         "The 0.50 direct-reader F1 boundary is a declared heuristic. The paired "
         "differences and their question-level bootstrap intervals should be used "
         "as the primary evidence. This diagnostic does not prove a unique causal "
-        "decomposition because the communication and centralized prompts differ.",
+        "decomposition: one-shot gather changes the interaction schedule and "
+        "dialogue opportunity, while the centralized reader also changes evidence "
+        "access and prompting.",
         "",
     ]
     report_path = output_dir / "diagnostic_report.md"

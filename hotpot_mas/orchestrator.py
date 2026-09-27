@@ -68,13 +68,14 @@ class Orchestrator:
         decision_step: Optional[int],
         message_id: Optional[str] = None,
         note: Optional[str] = None,
+        recipient: str = "celab",
     ) -> Event:
         return Event(
             event_index=index,
             event_type="controller",
             decision_step=decision_step,
             speaker="controller",
-            recipient="celab",
+            recipient=recipient,
             message_id=message_id,
             raw_output=note,
             parse_status="not_parsed",
@@ -310,6 +311,256 @@ class Orchestrator:
         record["events"] = [event.to_dict() for event in events]
         return record
 
+    def _run_one_shot_gather(
+        self,
+        question: Dict[str, Any],
+        run_index: int,
+        run_seed: int,
+        run_id: str,
+    ) -> Dict[str, Any]:
+        """Ask each private worker once, then let Celab synthesize once."""
+        record = self._base_record(question, run_index, run_seed, run_id)
+        events: List[Event] = []
+        started = time.time()
+        seed_all(run_seed)
+        agents = make_agents(
+            self.prompts,
+            self.engine,
+            run_seed,
+            question["evidence_alice"],
+            question["evidence_bob"],
+            question=question["question"],
+        )
+        alice: Agent = agents["alice"]
+        bob: Agent = agents["bob"]
+        celab: Agent = agents["celab"]
+        token_sums = {
+            "alice": {"input": 0, "generated": 0},
+            "bob": {"input": 0, "generated": 0},
+            "celab": {"input": 0, "generated": 0},
+        }
+        generation_cap_agents: List[str] = []
+        generation_cap_events = 0
+        num_messages = 0
+        num_queries = {"alice": 0, "bob": 0}
+        num_responses = {"alice": 0, "bob": 0}
+        final_answer: Optional[str] = None
+        final_raw_output: Optional[str] = None
+        parse_status = "not_parsed"
+        parse_error: Optional[str] = None
+        termination_reason: Optional[str] = None
+        error_message: Optional[str] = None
+        final_parse_fallback = False
+        parse_fallback_statuses: List[str] = []
+
+        def record_generation(
+            agent: Agent,
+            result: Any,
+            decision_step: Optional[int],
+            message_id: str,
+            **kwargs: Any,
+        ) -> None:
+            nonlocal generation_cap_events, num_messages
+            events.append(
+                self._generation_event(
+                    len(events),
+                    agent,
+                    result,
+                    decision_step,
+                    agent.visible_message_ids(),
+                    message_id=message_id,
+                    **kwargs,
+                )
+            )
+            num_messages += 1
+            token_sums[agent.name]["input"] += result.input_tokens
+            token_sums[agent.name]["generated"] += result.generated_tokens
+            if result.generation_cap_reached:
+                generation_cap_events += 1
+                if agent.name not in generation_cap_agents:
+                    generation_cap_agents.append(agent.name)
+
+        try:
+            question_message = Message(
+                message_id=celab.next_message_id(),
+                speaker="controller",
+                recipient="celab",
+                content=question["question"],
+            )
+            celab.add_message(question_message)
+            events.append(
+                self._controller_event(
+                    len(events),
+                    "initial_task",
+                    decision_step=None,
+                    message_id=question_message.message_id,
+                    note=f"question delivered to celab: {question['question']}",
+                )
+            )
+
+            for worker in (alice, bob):
+                task = self.prompts.render(
+                    "worker_task", worker_name=worker.name.title()
+                )
+                task_message = Message(
+                    message_id=worker.next_message_id(),
+                    speaker="controller",
+                    recipient=worker.name,
+                    content=task,
+                )
+                worker.add_message(task_message)
+                num_queries[worker.name] += 1
+                events.append(
+                    self._controller_event(
+                        len(events),
+                        "one_shot_worker_task",
+                        decision_step=None,
+                        message_id=task_message.message_id,
+                        note=task,
+                        recipient=worker.name,
+                    )
+                )
+                worker_result = worker.generate()
+                reply_id = worker.next_message_id()
+                num_responses[worker.name] += 1
+                record_generation(
+                    worker,
+                    worker_result,
+                    None,
+                    reply_id,
+                    parse_status="not_parsed",
+                    recipient="celab",
+                )
+                reply = Message(
+                    message_id=reply_id,
+                    speaker=worker.name,
+                    recipient="celab",
+                    content=worker_result.raw_output,
+                )
+                worker.add_message(reply)
+                celab.add_message(reply)
+
+            result = celab.generate()
+            final_raw_output = result.raw_output
+            final_id = celab.next_message_id()
+            parsed = parse_celab_output(result.raw_output)
+            parse_status = parsed.status
+            if parsed.status == "error" or parsed.action != "final":
+                parse_status = "error"
+                parse_error = parsed.error or (
+                    "one-shot Celab output was not a final action"
+                )
+                termination_reason = "parse_error"
+                record_generation(
+                    celab,
+                    result,
+                    1,
+                    final_id,
+                    parse_status="error",
+                    parse_error=parse_error,
+                )
+            else:
+                final_answer = parsed.body
+                final_parse_fallback = (
+                    parsed.status == "ok_unclosed_final_fallback"
+                )
+                if parsed.status.startswith("ok_") and parsed.status.endswith(
+                    "_fallback"
+                ):
+                    parse_fallback_statuses.append(parsed.status)
+                termination_reason = "natural_final"
+                record_generation(
+                    celab,
+                    result,
+                    1,
+                    final_id,
+                    parsed_action="final",
+                    parsed_body=parsed.body,
+                    parse_status=parsed.status,
+                )
+        except Exception as exc:  # noqa: BLE001
+            termination_reason = "error"
+            parse_status = "error"
+            error_message = str(exc)
+            events.append(
+                self._controller_event(
+                    len(events),
+                    "error_termination",
+                    decision_step=1,
+                    note=f"one-shot gather aborted by exception: {exc}",
+                )
+            )
+
+        f1, em = evaluate_answer(final_answer, question["answer"])
+        input_total = sum(value["input"] for value in token_sums.values())
+        generated_total = sum(
+            value["generated"] for value in token_sums.values()
+        )
+        record.update(
+            {
+                "decision_steps": 1,
+                "cap_reached": False,
+                "decision_cap_reached": False,
+                "generation_cap_reached": generation_cap_events > 0,
+                "forced_final_calls": 0,
+                "natural_termination": termination_reason == "natural_final",
+                "termination_reason": termination_reason,
+                "final_raw_output": final_raw_output,
+                "final_answer": final_answer,
+                "final_answer_extracted": final_answer,
+                "final_parse_fallback": final_parse_fallback,
+                "protocol_parse_fallback": bool(parse_fallback_statuses),
+                "parse_fallback_events": len(parse_fallback_statuses),
+                "parse_fallback_statuses": parse_fallback_statuses,
+                "casefold_route_fallback": False,
+                "terminal_final_precedence_fallback": (
+                    "ok_terminal_final_precedence_fallback"
+                    in parse_fallback_statuses
+                ),
+                "parse_status": parse_status,
+                "parse_error": parse_error,
+                "f1": f1,
+                "em": em,
+                "answer_f1": f1,
+                "answer_em": em,
+                "num_alice_queries": num_queries["alice"],
+                "num_bob_queries": num_queries["bob"],
+                "num_total_queries": sum(num_queries.values()),
+                "num_alice_responses": num_responses["alice"],
+                "num_bob_responses": num_responses["bob"],
+                "num_messages": num_messages,
+                "num_alice_clarification_requests": 0,
+                "num_bob_clarification_requests": 0,
+                "num_clarification_requests": 0,
+                "num_clarification_round_trips_completed": 0,
+                "clarification_protocol_violations": 0,
+                "ignored_clarification_requests": 0,
+                "clarification_triggered": False,
+                "generation_cap_agents": generation_cap_agents,
+                "generation_cap_events": generation_cap_events,
+                "input_tokens_alice": token_sums["alice"]["input"],
+                "input_tokens_bob": token_sums["bob"]["input"],
+                "input_tokens_celab": token_sums["celab"]["input"],
+                "input_tokens_total": input_total,
+                "alice_input_tokens": token_sums["alice"]["input"],
+                "bob_input_tokens": token_sums["bob"]["input"],
+                "celab_input_tokens": token_sums["celab"]["input"],
+                "total_input_tokens": input_total,
+                "generated_tokens_alice": token_sums["alice"]["generated"],
+                "generated_tokens_bob": token_sums["bob"]["generated"],
+                "generated_tokens_celab": token_sums["celab"]["generated"],
+                "total_generated_tokens": generated_total,
+                "alice_generated_tokens": token_sums["alice"]["generated"],
+                "bob_generated_tokens": token_sums["bob"]["generated"],
+                "celab_generated_tokens": token_sums["celab"]["generated"],
+                "total_model_tokens": input_total + generated_total,
+                "duration_seconds": round(time.time() - started, 3),
+                "error": error_message,
+            }
+        )
+        record["events"] = [event.to_dict() for event in events]
+        return record
+
     # -- the state machine --------------------------------------------------
 
     def run_one(
@@ -323,6 +574,10 @@ class Orchestrator:
             return self._run_centralized_one(
                 question, run_index, run_seed, run_id
             )
+        if self.cfg.architecture == "one_shot_gather":
+            return self._run_one_shot_gather(
+                question, run_index, run_seed, run_id
+            )
         record = self._base_record(question, run_index, run_seed, run_id)
         events: List[Event] = []
         started = time.time()
@@ -334,6 +589,11 @@ class Orchestrator:
             run_seed,
             question["evidence_alice"],
             question["evidence_bob"],
+            question=(
+                question["question"]
+                if self.cfg.share_question_with_workers
+                else ""
+            ),
         )
         alice: Agent = agents["alice"]
         bob: Agent = agents["bob"]

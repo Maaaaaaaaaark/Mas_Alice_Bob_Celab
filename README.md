@@ -26,7 +26,9 @@ D:\Base_Experiment_hotpot_mas\
 ├── pytest.ini                            # pytest config (testpaths=tests, pythonpath=.)
 ├── .gitignore                            # ignores __pycache__, .pytest_cache, outputs/
 ├── configs/
-│   └── base.yaml                         # all experiment settings (model, generation, seeds, modes, paths)
+│   ├── base.yaml                         # original experiment settings
+│   ├── shared_question.yaml              # workers also see the original question
+│   └── one_shot_gather.yaml              # fixed Alice/Bob reports, then one Celab synthesis
 ├── prompts/                              # versioned prompt templates (sha256-hashed)
 │   ├── alice_system.txt                  # Alice system prompt ($private_evidence placeholder)
 │   ├── bob_system.txt                    # Bob system prompt (symmetric)
@@ -49,7 +51,7 @@ D:\Base_Experiment_hotpot_mas\
 │   ├── logging_io.py                     # environment info + JsonlWriter (resumable append) + load_runs
 │   ├── runner.py                         # trajectory loop, resume, per-run progress line
 │   ├── report.py                         # run-level / per-question / dataset summaries + report.md
-│   └── cli.py                            # CLI: prepare-questions / run / report
+│   └── cli.py                            # CLI: prepare-questions / run / report / diagnose
 ├── tests/
 │   ├── conftest.py                       # sample question, config, prompts, MockEngine run helper
 │   ├── test_parser.py                    # routing/termination/uniqueness parsing
@@ -68,13 +70,19 @@ D:\Base_Experiment_hotpot_mas\
     └── report.md                     # human-readable English report
 ```
 
-Two diagnostic conditions are also available:
+Four diagnostic/control conditions are also available:
 
 - `configs/clarification.yaml`: the three-agent topology with one optional
   `CLARIFY:` request per worker and logged clarification completion/violation
   metrics;
 - `configs/centralized_reader.yaml`: one call to the same frozen Gemma model
-  with the original question and both relevant evidence documents.
+  with the original question and both relevant evidence documents;
+- `configs/shared_question.yaml`: the v6 free-routing MAS, except Alice and
+  Bob also see the original question. Celab's two prompt files are byte-for-byte
+  identical to v6, so this isolates worker question visibility;
+- `configs/one_shot_gather.yaml`: Alice and Bob each see the question and their
+  own private document, each reports exactly once, and Celab synthesizes exactly
+  once. Raw private documents remain isolated from Celab.
 
 ## 2. Installation (on the GPU machine)
 
@@ -107,14 +115,18 @@ python -m hotpot_mas.cli run --config configs/base.yaml --mode small
 # Stage 4 full: 100 questions x 10 runs (seeds 0..9)
 python -m hotpot_mas.cli run --config configs/base.yaml --mode full
 
-# Matched 20-question x 2-seed diagnostic pilots
+# Matched 20-question x 2-seed diagnostic/control pilots
 python -m hotpot_mas.cli run --config configs/clarification.yaml --mode pilot
+python -m hotpot_mas.cli run --config configs/shared_question.yaml --mode pilot
+python -m hotpot_mas.cli run --config configs/one_shot_gather.yaml --mode pilot
 python -m hotpot_mas.cli run --config configs/centralized_reader.yaml --mode pilot
 
-# English paired diagnostic report (run after both pilots finish)
+# Five-condition English paired diagnostic report
 python -m hotpot_mas.cli diagnose \
   --baseline outputs/hotpotqa_base_mas/v6_protocol_fallback/runs.jsonl \
   --clarification outputs/hotpotqa_base_mas/v7_worker_clarification/runs.jsonl \
+  --shared-question outputs/hotpotqa_base_mas/v8_shared_question/runs.jsonl \
+  --one-shot outputs/hotpotqa_base_mas/v9_one_shot_gather/runs.jsonl \
   --centralized outputs/hotpotqa_centralized_reader/v1/runs.jsonl
 
 # Tests (no GPU needed; MockEngine)
@@ -140,6 +152,11 @@ CLI overrides for `run`: `--questions N`, `--runs N`, `--seeds 0,1,2`.
 The new condition reports are written beside their `runs.jsonl` files. The
 paired English diagnostic is written to
 `outputs/hotpotqa_diagnostics/reading_vs_communication/diagnostic_report.md`.
+It reports every condition against the v6 baseline and three staged deltas:
+worker question visibility, fixed scheduling, and the remaining gap to a
+centralized reader. Interpret the latter two as mechanism diagnostics rather
+than unique causal estimates: the schedules, dialogue opportunities, evidence
+access, and prompts are not all identical.
 
 Each `runs.jsonl` line is a full run record per spec sec. 15: run identity,
 question + private evidence, prompt version/hashes, resolved config,
@@ -248,6 +265,11 @@ means; a consistency check that `total_generated_tokens` equals the sum of
     same `generate(messages, seed, speaker)` contract. vLLM runs verify that
     its rendered prompt token IDs exactly match Transformers before accepting
     an output, and log the official tokenizer chat-template hash.
+15. **Intermediate controls**: shared-question MAS changes worker question
+    visibility but preserves v6 free routing and Celab prompts. One-shot gather
+    preserves separate worker evidence, but replaces free routing with a fixed
+    Alice-once, Bob-once, Celab-once schedule. The centralized reader removes
+    both private-document communication and distributed synthesis.
 
 ## 8. Controlled vLLM comparison
 

@@ -74,6 +74,9 @@ def _run_level_stats(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
         .get("worker_clarification", {})
         .get("enabled", False)
     )
+    shared_question = bool(
+        first.get("config", {}).get("share_question_with_workers", False)
+    )
     clarification_requests = sum(
         int(r.get("num_clarification_requests", 0)) for r in runs
     )
@@ -84,6 +87,7 @@ def _run_level_stats(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
     stats: Dict[str, Any] = {
         "architecture": architecture,
         "worker_clarification_enabled": clarification_enabled,
+        "share_question_with_workers": shared_question,
         "num_runs": len(runs),
         "f1": _mean_std([r["f1"] for r in runs]),
         "em": _mean_std([r["em"] for r in runs]),
@@ -259,8 +263,12 @@ def _markdown_report(
     centralized = r["architecture"] == "centralized_reader"
     if centralized:
         title = "# HotpotQA Centralized Reader Diagnostic — Report"
+    elif r["architecture"] == "one_shot_gather":
+        title = "# HotpotQA One-Shot Gather MAS Control — Report"
     elif r["worker_clarification_enabled"]:
         title = "# HotpotQA Worker-Clarification MAS Experiment — Report"
+    elif r["share_question_with_workers"]:
+        title = "# HotpotQA Shared-Question MAS Control — Report"
     else:
         title = "# HotpotQA 3-Agent MAS Base Experiment — Report"
     lines = [

@@ -93,6 +93,10 @@ def _cmd_diagnose(args: argparse.Namespace) -> None:
         resolve(args.clarification),
         resolve(args.centralized),
         resolve(args.output_dir),
+        shared_question_path=(
+            resolve(args.shared_question) if args.shared_question else None
+        ),
+        one_shot_path=(resolve(args.one_shot) if args.one_shot else None),
     )
     print("diagnostic files written:")
     for name, path in paths.items():
@@ -149,7 +153,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     diagnose = subparsers.add_parser(
         "diagnose",
-        help="compare baseline, clarification, and centralized-reader runs",
+        help="compare matched MAS controls and centralized-reader runs",
     )
     diagnose.add_argument("--baseline", required=True, help="baseline runs.jsonl")
     diagnose.add_argument(
@@ -157,6 +161,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     diagnose.add_argument(
         "--centralized", required=True, help="centralized-reader runs.jsonl"
+    )
+    diagnose.add_argument(
+        "--shared-question", help="shared-question MAS runs.jsonl"
+    )
+    diagnose.add_argument(
+        "--one-shot", help="one-shot gather MAS runs.jsonl"
     )
     diagnose.add_argument(
         "--output-dir",

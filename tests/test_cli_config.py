@@ -102,7 +102,38 @@ def test_centralized_reader_config_uses_same_model_data_and_decoding():
     assert centralized.run_seeds == base.run_seeds
 
 
-def test_diagnose_cli_accepts_three_run_files():
+def test_intermediate_controls_change_only_declared_mechanisms():
+    base = ExperimentConfig.from_yaml("configs/protocol_fallback.yaml")
+    shared = ExperimentConfig.from_yaml("configs/shared_question.yaml")
+    one_shot = ExperimentConfig.from_yaml("configs/one_shot_gather.yaml")
+
+    assert shared.architecture == "mas"
+    assert shared.share_question_with_workers is True
+    assert shared.worker_clarification.enabled is False
+    assert shared.experiment_version == "v8_shared_question"
+
+    assert one_shot.architecture == "one_shot_gather"
+    assert one_shot.share_question_with_workers is True
+    assert one_shot.worker_clarification.enabled is False
+    assert one_shot.experiment_version == "v9_one_shot_gather"
+
+    for condition in (shared, one_shot):
+        assert condition.model_name == base.model_name
+        assert condition.model_revision == base.model_revision
+        assert condition.tokenizer_revision == base.tokenizer_revision
+        assert condition.generation.to_dict() == base.generation.to_dict()
+        assert condition.manifest_path == base.manifest_path
+        assert condition.run_seeds == base.run_seeds
+
+
+def test_one_shot_requires_worker_question_visibility(base_config):
+    base_config.architecture = "one_shot_gather"
+    base_config.share_question_with_workers = False
+    with pytest.raises(ValueError, match="requires share_question"):
+        base_config.validate()
+
+
+def test_diagnose_cli_accepts_all_five_run_files():
     args = _build_parser().parse_args(
         [
             "diagnose",
@@ -112,7 +143,13 @@ def test_diagnose_cli_accepts_three_run_files():
             "clarification.jsonl",
             "--centralized",
             "centralized.jsonl",
+            "--shared-question",
+            "shared.jsonl",
+            "--one-shot",
+            "one-shot.jsonl",
         ]
     )
     assert args.baseline == "base.jsonl"
+    assert args.shared_question == "shared.jsonl"
+    assert args.one_shot == "one-shot.jsonl"
     assert args.output_dir.endswith("reading_vs_communication")

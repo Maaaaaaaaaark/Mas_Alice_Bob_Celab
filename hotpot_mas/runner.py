@@ -22,7 +22,12 @@ from .config import ExperimentConfig
 from .logging_io import JsonlWriter, collect_environment_info
 from .model_engine import HFEngine, ModelEngine, VLLMEngine
 from .orchestrator import Orchestrator
-from .prompts import CENTRALIZED_PROMPT_NAMES, MAS_PROMPT_NAMES, PromptSet
+from .prompts import (
+    CENTRALIZED_PROMPT_NAMES,
+    MAS_PROMPT_NAMES,
+    ONE_SHOT_PROMPT_NAMES,
+    PromptSet,
+)
 from .question_selection import load_manifest
 from .report import write_report
 
@@ -192,11 +197,12 @@ def run_from_config(cfg: ExperimentConfig) -> None:
         )
     tqdm.write(f"selected {len(questions)} questions from manifest")
 
-    prompt_names = (
-        CENTRALIZED_PROMPT_NAMES
-        if cfg.architecture == "centralized_reader"
-        else MAS_PROMPT_NAMES
-    )
+    if cfg.architecture == "centralized_reader":
+        prompt_names = CENTRALIZED_PROMPT_NAMES
+    elif cfg.architecture == "one_shot_gather":
+        prompt_names = ONE_SHOT_PROMPT_NAMES
+    else:
+        prompt_names = MAS_PROMPT_NAMES
     prompts = PromptSet(cfg.prompt_dir, names=prompt_names)
     tqdm.write(f"prompts loaded, prompt_version={prompts.version}")
     environment_info = collect_environment_info()

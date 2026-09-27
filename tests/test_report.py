@@ -105,3 +105,24 @@ def test_centralized_reader_report_has_english_diagnostic_title(
     report = paths["report"].read_text(encoding="utf-8")
     assert "Centralized Reader Diagnostic" in report
     assert "generated tokens, Reader" in report
+
+
+def test_intermediate_control_reports_have_english_titles(
+    run_with_mock, tmp_path: Path
+):
+    for architecture, shared, expected in (
+        ("mas", True, "Shared-Question MAS Control"),
+        ("one_shot_gather", True, "One-Shot Gather MAS Control"),
+    ):
+        record, _ = run_with_mock()
+        record["architecture"] = architecture
+        record["config"]["architecture"] = architecture
+        record["config"]["share_question_with_workers"] = shared
+        record["config"]["worker_clarification"]["enabled"] = False
+        output = tmp_path / architecture
+        runs_path = output / "runs.jsonl"
+        JsonlWriter(runs_path).append(record)
+        report = write_report(runs_path, output)["report"].read_text(
+            encoding="utf-8"
+        )
+        assert expected in report

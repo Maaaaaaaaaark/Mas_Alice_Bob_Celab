@@ -12,7 +12,11 @@ from typing import Any, Dict, List
 
 from hotpot_mas.model_engine import MockEngine
 from hotpot_mas.orchestrator import Orchestrator
-from hotpot_mas.prompts import CENTRALIZED_PROMPT_NAMES, PromptSet
+from hotpot_mas.prompts import (
+    CENTRALIZED_PROMPT_NAMES,
+    ONE_SHOT_PROMPT_NAMES,
+    PromptSet,
+)
 
 
 def _model_events(record: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -46,6 +50,83 @@ def test_natural_run_counts_decision_steps(run_with_mock):
     # Worker events carry the step that triggered them and do NOT add steps.
     steps = [e["decision_step"] for e in _model_events(record)]
     assert steps == [1, 1, 2, 2, 3]
+
+
+def test_one_shot_gather_calls_each_agent_once_and_preserves_isolation(
+    base_config, sample_question
+):
+    root = Path(__file__).resolve().parent.parent
+    prompts = PromptSet(root / "prompts_one_shot", names=ONE_SHOT_PROMPT_NAMES)
+    scripts = {
+        "alice": ["Alice: Alpha City is on the west bank."],
+        "bob": ["Bob: The bridge is called The Connector Bridge."],
+        "celab": ["Celab: <FINAL>The Connector Bridge</FINAL>"],
+    }
+    engine = MockEngine(scripts=scripts)
+    cfg = replace(
+        base_config,
+        architecture="one_shot_gather",
+        share_question_with_workers=True,
+    )
+    record = Orchestrator(cfg, prompts, engine, {}).run_one(
+        sample_question, 0, 4, "one-shot-run"
+    )
+
+    assert [call.speaker for call in engine.calls] == ["alice", "bob", "celab"]
+    assert record["termination_reason"] == "natural_final"
+    assert record["decision_steps"] == 1
+    assert record["num_alice_queries"] == 1
+    assert record["num_bob_queries"] == 1
+    assert record["num_messages"] == 3
+    assert record["final_answer"] == "The Connector Bridge"
+    assert record["em"] == 1.0
+    assert record["total_generated_tokens"] == sum(
+        event["generated_tokens"] for event in _model_events(record)
+    )
+
+    alice_input = "\n".join(
+        item["content"] for item in engine.calls_by_speaker["alice"][0].messages
+    )
+    bob_input = "\n".join(
+        item["content"] for item in engine.calls_by_speaker["bob"][0].messages
+    )
+    celab_input = "\n".join(
+        item["content"] for item in engine.calls_by_speaker["celab"][0].messages
+    )
+    assert sample_question["question"] in alice_input
+    assert sample_question["question"] in bob_input
+    assert sample_question["evidence_bob"] not in alice_input
+    assert sample_question["evidence_alice"] not in bob_input
+    assert "Alpha City is on the west bank" in celab_input
+    assert "The bridge is called The Connector Bridge" in celab_input
+    assert sample_question["evidence_alice"] not in celab_input
+    assert sample_question["evidence_bob"] not in celab_input
+
+
+def test_one_shot_gather_rejects_nonfinal_celab_action(
+    base_config, sample_question
+):
+    root = Path(__file__).resolve().parent.parent
+    prompts = PromptSet(root / "prompts_one_shot", names=ONE_SHOT_PROMPT_NAMES)
+    engine = MockEngine(
+        scripts={
+            "alice": ["Alice: report"],
+            "bob": ["Bob: report"],
+            "celab": ["Celab: <TO>ALICE</TO> ask again"],
+        }
+    )
+    cfg = replace(
+        base_config,
+        architecture="one_shot_gather",
+        share_question_with_workers=True,
+    )
+    record = Orchestrator(cfg, prompts, engine, {}).run_one(
+        sample_question, 0, 0, "one-shot-bad-final"
+    )
+    assert record["termination_reason"] == "parse_error"
+    assert record["final_answer"] is None
+    assert record["parse_status"] == "error"
+    assert record["f1"] == 0.0
 
 
 def test_natural_unclosed_final_uses_audited_fallback(run_with_mock):

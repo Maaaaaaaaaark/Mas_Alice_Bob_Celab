@@ -22,10 +22,12 @@ PROMPT_FILES = {
     "forced_final": "forced_final_instruction.txt",
     "centralized_system": "centralized_system.txt",
     "centralized_task": "centralized_task.txt",
+    "worker_task": "worker_task.txt",
 }
 
 MAS_PROMPT_NAMES = ("alice", "bob", "celab", "forced_final")
 CENTRALIZED_PROMPT_NAMES = ("centralized_system", "centralized_task")
+ONE_SHOT_PROMPT_NAMES = MAS_PROMPT_NAMES + ("worker_task",)
 
 
 def _sha256(text: str) -> str:

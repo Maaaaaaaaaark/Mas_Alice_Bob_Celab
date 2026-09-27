@@ -129,6 +129,41 @@ def test_one_shot_gather_rejects_nonfinal_celab_action(
     assert record["f1"] == 0.0
 
 
+def test_one_shot_direct_answer_needs_no_protocol_marker(
+    base_config, sample_question
+):
+    root = Path(__file__).resolve().parent.parent
+    prompts = PromptSet(
+        root / "prompts_one_shot_direct", names=ONE_SHOT_PROMPT_NAMES
+    )
+    engine = MockEngine(
+        scripts={
+            "alice": ["Alice: Alpha City is on the west bank."],
+            "bob": ["Bob: The bridge is called The Connector Bridge."],
+            "celab": ["The Connector Bridge"],
+        }
+    )
+    cfg = replace(
+        base_config,
+        architecture="one_shot_direct_answer",
+        share_question_with_workers=True,
+    )
+    record = Orchestrator(cfg, prompts, engine, {}).run_one(
+        sample_question, 0, 0, "one-shot-direct"
+    )
+
+    assert [call.speaker for call in engine.calls] == ["alice", "bob", "celab"]
+    assert record["termination_reason"] == "direct_answer"
+    assert record["natural_termination"] is True
+    assert record["parse_status"] == "not_required"
+    assert record["parse_error"] is None
+    assert record["final_answer"] == "The Connector Bridge"
+    assert record["em"] == 1.0
+    final_event = _model_events(record)[-1]
+    assert final_event["parsed_action"] == "direct_answer"
+    assert final_event["parse_status"] == "not_required"
+
+
 def test_natural_unclosed_final_uses_audited_fallback(run_with_mock):
     record, _ = run_with_mock(
         scripts={"celab": ["Celab: <FINAL>The Connector Bridge"]}

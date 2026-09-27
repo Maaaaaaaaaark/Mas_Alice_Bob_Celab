@@ -113,6 +113,11 @@ def test_intermediate_control_reports_have_english_titles(
     for architecture, shared, expected in (
         ("mas", True, "Shared-Question MAS Control"),
         ("one_shot_gather", True, "One-Shot Gather MAS Control"),
+        (
+            "one_shot_direct_answer",
+            True,
+            "One-Shot Direct-Answer MAS Control",
+        ),
     ):
         record, _ = run_with_mock()
         record["architecture"] = architecture

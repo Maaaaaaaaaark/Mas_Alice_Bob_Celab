@@ -28,7 +28,8 @@ D:\Base_Experiment_hotpot_mas\
 ├── configs/
 │   ├── base.yaml                         # original experiment settings
 │   ├── shared_question.yaml              # workers also see the original question
-│   └── one_shot_gather.yaml              # fixed Alice/Bob reports, then one Celab synthesis
+│   ├── one_shot_gather.yaml              # archived marker-format control (v9)
+│   └── one_shot_direct_answer.yaml       # corrected fixed-report control (v10)
 ├── prompts/                              # versioned prompt templates (sha256-hashed)
 │   ├── alice_system.txt                  # Alice system prompt ($private_evidence placeholder)
 │   ├── bob_system.txt                    # Bob system prompt (symmetric)
@@ -82,7 +83,12 @@ Four diagnostic/control conditions are also available:
   identical to v6, so this isolates worker question visibility;
 - `configs/one_shot_gather.yaml`: Alice and Bob each see the question and their
   own private document, each reports exactly once, and Celab synthesizes exactly
-  once. Raw private documents remain isolated from Celab.
+  once. Its v9 pilot is retained as an audited failed control because all Celab
+  outputs omitted the required opening `<FINAL>` marker;
+- `configs/one_shot_direct_answer.yaml`: the corrected fixed-report control.
+  Alice/Bob inputs and reports are unchanged from v9, while Celab directly
+  returns the concise answer because it has no routing decision to make. Raw
+  private documents remain isolated from Celab.
 
 ## 2. Installation (on the GPU machine)
 
@@ -118,7 +124,7 @@ python -m hotpot_mas.cli run --config configs/base.yaml --mode full
 # Matched 20-question x 2-seed diagnostic/control pilots
 python -m hotpot_mas.cli run --config configs/clarification.yaml --mode pilot
 python -m hotpot_mas.cli run --config configs/shared_question.yaml --mode pilot
-python -m hotpot_mas.cli run --config configs/one_shot_gather.yaml --mode pilot
+python -m hotpot_mas.cli run --config configs/one_shot_direct_answer.yaml --mode pilot
 python -m hotpot_mas.cli run --config configs/centralized_reader.yaml --mode pilot
 
 # Five-condition English paired diagnostic report
@@ -126,7 +132,7 @@ python -m hotpot_mas.cli diagnose \
   --baseline outputs/hotpotqa_base_mas/v6_protocol_fallback/runs.jsonl \
   --clarification outputs/hotpotqa_base_mas/v7_worker_clarification/runs.jsonl \
   --shared-question outputs/hotpotqa_base_mas/v8_shared_question/runs.jsonl \
-  --one-shot outputs/hotpotqa_base_mas/v9_one_shot_gather/runs.jsonl \
+  --one-shot outputs/hotpotqa_base_mas/v10_one_shot_direct_answer/runs.jsonl \
   --centralized outputs/hotpotqa_centralized_reader/v1/runs.jsonl
 
 # Tests (no GPU needed; MockEngine)

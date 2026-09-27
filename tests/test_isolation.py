@@ -147,3 +147,11 @@ def test_shared_question_keeps_baseline_celab_prompts_byte_identical():
         assert (root / "prompts_shared_question" / filename).read_bytes() == (
             root / "prompts" / filename
         ).read_bytes()
+
+
+def test_one_shot_direct_changes_only_celab_response_prompt_files():
+    root = Path(__file__).resolve().parent.parent
+    for filename in ("alice_system.txt", "bob_system.txt", "worker_task.txt"):
+        assert (root / "prompts_one_shot_direct" / filename).read_bytes() == (
+            root / "prompts_one_shot" / filename
+        ).read_bytes()

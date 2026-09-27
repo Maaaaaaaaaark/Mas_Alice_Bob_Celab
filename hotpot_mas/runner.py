@@ -199,7 +199,10 @@ def run_from_config(cfg: ExperimentConfig) -> None:
 
     if cfg.architecture == "centralized_reader":
         prompt_names = CENTRALIZED_PROMPT_NAMES
-    elif cfg.architecture == "one_shot_gather":
+    elif cfg.architecture in {
+        "one_shot_gather",
+        "one_shot_direct_answer",
+    }:
         prompt_names = ONE_SHOT_PROMPT_NAMES
     else:
         prompt_names = MAS_PROMPT_NAMES

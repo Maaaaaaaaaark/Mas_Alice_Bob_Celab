@@ -106,6 +106,9 @@ def test_intermediate_controls_change_only_declared_mechanisms():
     base = ExperimentConfig.from_yaml("configs/protocol_fallback.yaml")
     shared = ExperimentConfig.from_yaml("configs/shared_question.yaml")
     one_shot = ExperimentConfig.from_yaml("configs/one_shot_gather.yaml")
+    direct = ExperimentConfig.from_yaml(
+        "configs/one_shot_direct_answer.yaml"
+    )
 
     assert shared.architecture == "mas"
     assert shared.share_question_with_workers is True
@@ -117,7 +120,12 @@ def test_intermediate_controls_change_only_declared_mechanisms():
     assert one_shot.worker_clarification.enabled is False
     assert one_shot.experiment_version == "v9_one_shot_gather"
 
-    for condition in (shared, one_shot):
+    assert direct.architecture == "one_shot_direct_answer"
+    assert direct.share_question_with_workers is True
+    assert direct.worker_clarification.enabled is False
+    assert direct.experiment_version == "v10_one_shot_direct_answer"
+
+    for condition in (shared, one_shot, direct):
         assert condition.model_name == base.model_name
         assert condition.model_revision == base.model_revision
         assert condition.tokenizer_revision == base.tokenizer_revision
@@ -129,7 +137,7 @@ def test_intermediate_controls_change_only_declared_mechanisms():
 def test_one_shot_requires_worker_question_visibility(base_config):
     base_config.architecture = "one_shot_gather"
     base_config.share_question_with_workers = False
-    with pytest.raises(ValueError, match="requires share_question"):
+    with pytest.raises(ValueError, match="share_question_with_workers"):
         base_config.validate()
 
 

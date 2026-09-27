@@ -443,41 +443,56 @@ class Orchestrator:
             result = celab.generate()
             final_raw_output = result.raw_output
             final_id = celab.next_message_id()
-            parsed = parse_celab_output(result.raw_output)
-            parse_status = parsed.status
-            if parsed.status == "error" or parsed.action != "final":
-                parse_status = "error"
-                parse_error = parsed.error or (
-                    "one-shot Celab output was not a final action"
-                )
-                termination_reason = "parse_error"
+            if self.cfg.architecture == "one_shot_direct_answer":
+                final_answer = result.raw_output.strip()
+                parse_status = "not_required"
+                termination_reason = "direct_answer"
                 record_generation(
                     celab,
                     result,
                     1,
                     final_id,
-                    parse_status="error",
-                    parse_error=parse_error,
+                    parsed_action="direct_answer",
+                    parsed_body=final_answer,
+                    parse_status="not_required",
                 )
             else:
-                final_answer = parsed.body
-                final_parse_fallback = (
-                    parsed.status == "ok_unclosed_final_fallback"
-                )
-                if parsed.status.startswith("ok_") and parsed.status.endswith(
-                    "_fallback"
-                ):
-                    parse_fallback_statuses.append(parsed.status)
-                termination_reason = "natural_final"
-                record_generation(
-                    celab,
-                    result,
-                    1,
-                    final_id,
-                    parsed_action="final",
-                    parsed_body=parsed.body,
-                    parse_status=parsed.status,
-                )
+                parsed = parse_celab_output(result.raw_output)
+                parse_status = parsed.status
+                if parsed.status == "error" or parsed.action != "final":
+                    parse_status = "error"
+                    parse_error = parsed.error or (
+                        "one-shot Celab output was not a final action"
+                    )
+                    termination_reason = "parse_error"
+                    record_generation(
+                        celab,
+                        result,
+                        1,
+                        final_id,
+                        parse_status="error",
+                        parse_error=parse_error,
+                    )
+                else:
+                    final_answer = parsed.body
+                    final_parse_fallback = (
+                        parsed.status == "ok_unclosed_final_fallback"
+                    )
+                    if (
+                        parsed.status.startswith("ok_")
+                        and parsed.status.endswith("_fallback")
+                    ):
+                        parse_fallback_statuses.append(parsed.status)
+                    termination_reason = "natural_final"
+                    record_generation(
+                        celab,
+                        result,
+                        1,
+                        final_id,
+                        parsed_action="final",
+                        parsed_body=parsed.body,
+                        parse_status=parsed.status,
+                    )
         except Exception as exc:  # noqa: BLE001
             termination_reason = "error"
             parse_status = "error"
@@ -503,7 +518,10 @@ class Orchestrator:
                 "decision_cap_reached": False,
                 "generation_cap_reached": generation_cap_events > 0,
                 "forced_final_calls": 0,
-                "natural_termination": termination_reason == "natural_final",
+                "natural_termination": termination_reason in {
+                    "natural_final",
+                    "direct_answer",
+                },
                 "termination_reason": termination_reason,
                 "final_raw_output": final_raw_output,
                 "final_answer": final_answer,
@@ -574,7 +592,10 @@ class Orchestrator:
             return self._run_centralized_one(
                 question, run_index, run_seed, run_id
             )
-        if self.cfg.architecture == "one_shot_gather":
+        if self.cfg.architecture in {
+            "one_shot_gather",
+            "one_shot_direct_answer",
+        }:
             return self._run_one_shot_gather(
                 question, run_index, run_seed, run_id
             )

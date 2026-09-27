@@ -209,10 +209,11 @@ class ExperimentConfig:
             "mas",
             "centralized_reader",
             "one_shot_gather",
+            "one_shot_direct_answer",
         }:
             raise ValueError(
                 "architecture must be one of: mas, centralized_reader, "
-                "one_shot_gather"
+                "one_shot_gather, one_shot_direct_answer"
             )
         if self.worker_clarification.max_per_worker < 0:
             raise ValueError(
@@ -226,11 +227,15 @@ class ExperimentConfig:
                 "worker clarification is only supported by the mas architecture"
             )
         if (
-            self.architecture == "one_shot_gather"
+            self.architecture in {
+                "one_shot_gather",
+                "one_shot_direct_answer",
+            }
             and not self.share_question_with_workers
         ):
             raise ValueError(
-                "one_shot_gather requires share_question_with_workers=true"
+                "one-shot architectures require "
+                "share_question_with_workers=true"
             )
         if (
             self.worker_clarification.enabled

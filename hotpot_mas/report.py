@@ -265,6 +265,8 @@ def _markdown_report(
         title = "# HotpotQA Centralized Reader Diagnostic — Report"
     elif r["architecture"] == "one_shot_gather":
         title = "# HotpotQA One-Shot Gather MAS Control — Report"
+    elif r["architecture"] == "one_shot_direct_answer":
+        title = "# HotpotQA One-Shot Direct-Answer MAS Control — Report"
     elif r["worker_clarification_enabled"]:
         title = "# HotpotQA Worker-Clarification MAS Experiment — Report"
     elif r["share_question_with_workers"]:

@@ -10,7 +10,7 @@ from typing import Any, Dict
 from hotpot_mas.logging_io import JsonlWriter, load_runs
 
 REQUIRED_KEYS = {
-    "experiment_id", "experiment_version", "dataset", "dataset_split",
+    "experiment_id", "experiment_version", "architecture", "dataset", "dataset_split",
     "run_id", "question_id", "run_index", "run_seed", "sample_selection_seed",
     "model_name", "model_revision", "tokenizer_revision", "generation_config",
     "question", "gold_answer", "question_type", "supporting_titles",
@@ -26,6 +26,10 @@ REQUIRED_KEYS = {
     "f1", "em", "answer_f1", "answer_em",
     "num_alice_queries", "num_bob_queries", "num_total_queries",
     "num_alice_responses", "num_bob_responses", "num_messages",
+    "num_alice_clarification_requests", "num_bob_clarification_requests",
+    "num_clarification_requests", "num_clarification_round_trips_completed",
+    "clarification_protocol_violations", "ignored_clarification_requests",
+    "clarification_triggered",
     "input_tokens_alice", "input_tokens_bob", "input_tokens_celab",
     "alice_input_tokens", "bob_input_tokens", "celab_input_tokens",
     "total_input_tokens",
@@ -98,6 +102,8 @@ def test_resolved_config_recorded(run_with_mock, base_config):
     assert cfg["generation"]["do_sample"] is True
     assert cfg["generation"]["max_new_tokens"] == 2048
     assert cfg["max_decision_steps"] == 20
+    assert cfg["architecture"] == "mas"
+    assert cfg["worker_clarification"]["enabled"] is False
 
 
 def test_token_sums_consistent(run_with_mock):

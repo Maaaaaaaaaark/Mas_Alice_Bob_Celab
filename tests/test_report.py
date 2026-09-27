@@ -55,3 +55,53 @@ def test_report_counts_protocol_fallback_types(run_with_mock, tmp_path: Path):
         == 1
     )
     assert summary["rates"]["casefold_route_fallback_rate"]["count"] == 0
+
+
+def test_english_report_includes_clarification_metrics(
+    run_with_mock, tmp_path: Path
+):
+    record, _ = run_with_mock(
+        scripts={
+            "celab": [
+                "Celab: <TO>ALICE</TO> q1",
+                "Celab: <TO>ALICE</TO> q2",
+                "Celab: <FINAL>The Connector Bridge</FINAL>",
+            ],
+            "alice": [
+                "Alice: CLARIFY: Which event?",
+                "Alice: The Connector Bridge.",
+            ],
+        },
+        clarification_enabled=True,
+    )
+    runs_path = tmp_path / "runs.jsonl"
+    JsonlWriter(runs_path).append(record)
+    paths = write_report(runs_path, tmp_path)
+    summary = json.loads(
+        paths["summary_run_level"].read_text(encoding="utf-8")
+    )
+    assert summary["rates"]["clarification_trigger_rate"]["count"] == 1
+    assert summary["clarification_round_trip_completion"] == {
+        "rate": 1.0,
+        "count": 1,
+        "n": 1,
+    }
+    report = paths["report"].read_text(encoding="utf-8")
+    assert "Worker-Clarification MAS Experiment" in report
+    assert "Clarification Trigger Rate" in report
+    assert "clarification round-trip completion rate" in report
+
+
+def test_centralized_reader_report_has_english_diagnostic_title(
+    run_with_mock, tmp_path: Path
+):
+    record, _ = run_with_mock()
+    record["architecture"] = "centralized_reader"
+    record["config"]["architecture"] = "centralized_reader"
+    record["config"]["worker_clarification"]["enabled"] = False
+    runs_path = tmp_path / "runs.jsonl"
+    JsonlWriter(runs_path).append(record)
+    paths = write_report(runs_path, tmp_path)
+    report = paths["report"].read_text(encoding="utf-8")
+    assert "Centralized Reader Diagnostic" in report
+    assert "generated tokens, Reader" in report

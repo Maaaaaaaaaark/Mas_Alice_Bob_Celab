@@ -1,9 +1,8 @@
-"""Versioned prompt templates (spec sec. 11).
+"""Versioned prompt templates (spec sec. 11 and diagnostic conditions).
 
-The three system prompts and the fixed forced-final instruction live in
-standalone ``.txt`` files (``prompts/``) and are never spread across Python
-modules. Each file is hashed (sha256) and the combined hash feeds
-``prompt_version``, so any wording change is detectable in the run records
+Prompt files live in standalone ``.txt`` files and are never spread across
+Python modules. Each selected file is hashed (sha256), and the combined hash
+feeds ``prompt_version``, so wording changes are detectable in the run records
 (spec sec. 11.4). Templates use ``string.Template`` placeholders
 (``$private_evidence``), which leaves all other characters (braces, dollars
 in evidence text) untouched.
@@ -21,7 +20,12 @@ PROMPT_FILES = {
     "bob": "bob_system.txt",
     "celab": "celab_system.txt",
     "forced_final": "forced_final_instruction.txt",
+    "centralized_system": "centralized_system.txt",
+    "centralized_task": "centralized_task.txt",
 }
+
+MAS_PROMPT_NAMES = ("alice", "bob", "celab", "forced_final")
+CENTRALIZED_PROMPT_NAMES = ("centralized_system", "centralized_task")
 
 
 def _sha256(text: str) -> str:
@@ -29,13 +33,14 @@ def _sha256(text: str) -> str:
 
 
 class PromptSet:
-    """Loads, hashes, and renders the four versioned prompt templates."""
+    """Load, hash, and render the templates selected by an experiment."""
 
-    def __init__(self, prompt_dir: Path):
+    def __init__(self, prompt_dir: Path, names: tuple[str, ...] = MAS_PROMPT_NAMES):
         self.prompt_dir = Path(prompt_dir)
         self.templates: Dict[str, str] = {}
         self.hashes: Dict[str, str] = {}
-        for name, filename in PROMPT_FILES.items():
+        for name in names:
+            filename = PROMPT_FILES[name]
             path = self.prompt_dir / filename
             if not path.is_file():
                 raise FileNotFoundError(f"prompt template missing: {path}")

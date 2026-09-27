@@ -23,7 +23,8 @@ _KNOWN_KEYS = {
     "tokenizer_revision", "dtype", "device", "attn_implementation",
     "engine", "vllm_gpu_memory_utilization", "vllm_enforce_eager",
     "max_input_length", "generation", "max_decision_steps", "prompt_dir",
-    "manifest_path", "output_dir", "modes",
+    "manifest_path", "output_dir", "modes", "architecture",
+    "worker_clarification",
 }
 
 
@@ -66,6 +67,20 @@ class ModeParams:
 
 
 @dataclass
+class WorkerClarificationParams:
+    """Optional worker-to-coordinator clarification protocol."""
+
+    enabled: bool = False
+    max_per_worker: int = 1
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "max_per_worker": self.max_per_worker,
+        }
+
+
+@dataclass
 class ExperimentConfig:
     experiment_id: str = "hotpotqa_base_mas"
     experiment_version: str = "v1"
@@ -88,6 +103,10 @@ class ExperimentConfig:
     max_input_length: int = 30000
     generation: GenerationParams = field(default_factory=GenerationParams)
     max_decision_steps: int = 20
+    architecture: str = "mas"
+    worker_clarification: WorkerClarificationParams = field(
+        default_factory=WorkerClarificationParams
+    )
     prompt_dir: Path = field(default_factory=lambda: REPO_ROOT / "prompts")
     manifest_path: Path = field(default_factory=lambda: REPO_ROOT / "outputs" / "question_manifest.json")
     output_dir: Path = field(default_factory=lambda: REPO_ROOT / "outputs")
@@ -106,6 +125,9 @@ class ExperimentConfig:
             raise ValueError(f"unknown config keys in {raw_path}: {sorted(unknown)}")
 
         generation = GenerationParams(**dict(raw.get("generation", {})))
+        clarification = WorkerClarificationParams(
+            **dict(raw.get("worker_clarification", {}))
+        )
         modes = {
             name: ModeParams(
                 num_questions=int(m["num_questions"]),
@@ -138,6 +160,8 @@ class ExperimentConfig:
             max_input_length=int(raw.get("max_input_length", 30000)),
             generation=generation,
             max_decision_steps=int(raw.get("max_decision_steps", 20)),
+            architecture=raw.get("architecture", "mas"),
+            worker_clarification=clarification,
             prompt_dir=_resolve_path(raw.get("prompt_dir", "prompts")),
             manifest_path=_resolve_path(raw.get("manifest_path", "outputs/question_manifest.json")),
             output_dir=_resolve_path(raw.get("output_dir", "outputs")),
@@ -177,6 +201,28 @@ class ExperimentConfig:
             raise ValueError("the vllm engine in this experiment requires cuda")
         if self.max_decision_steps <= 0:
             raise ValueError("max_decision_steps must be positive")
+        if self.architecture not in {"mas", "centralized_reader"}:
+            raise ValueError(
+                "architecture must be one of: mas, centralized_reader"
+            )
+        if self.worker_clarification.max_per_worker < 0:
+            raise ValueError(
+                "worker_clarification.max_per_worker must be non-negative"
+            )
+        if (
+            self.worker_clarification.enabled
+            and self.architecture != "mas"
+        ):
+            raise ValueError(
+                "worker clarification is only supported by the mas architecture"
+            )
+        if (
+            self.worker_clarification.enabled
+            and self.worker_clarification.max_per_worker == 0
+        ):
+            raise ValueError(
+                "enabled worker clarification requires max_per_worker > 0"
+            )
         if self.generation.max_new_tokens <= 0:
             raise ValueError("generation.max_new_tokens must be positive")
 
@@ -259,6 +305,8 @@ class ExperimentConfig:
             "max_input_length": self.max_input_length,
             "generation": self.generation.to_dict(),
             "max_decision_steps": self.max_decision_steps,
+            "architecture": self.architecture,
+            "worker_clarification": self.worker_clarification.to_dict(),
             "prompt_dir": str(self.prompt_dir),
             "manifest_path": str(self.manifest_path),
             "output_dir": str(self.output_dir),

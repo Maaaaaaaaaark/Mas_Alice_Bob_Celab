@@ -1,0 +1,8 @@
+Question:
+$question
+
+Evidence document 1:
+$evidence_alice
+
+Evidence document 2:
+$evidence_bob

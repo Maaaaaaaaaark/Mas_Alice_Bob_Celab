@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from hotpot_mas.parser import extract_final_answer, parse_celab_output
+from hotpot_mas.parser import (
+    extract_final_answer,
+    parse_celab_output,
+    parse_worker_reply,
+)
 
 
 def test_ask_alice():
@@ -167,3 +171,24 @@ def test_extract_final_answer_accepts_terminal_final_after_route():
     assert result.status == "ok_terminal_final_precedence_fallback"
     assert result.action == "final"
     assert result.body == "answer"
+
+
+def test_worker_clarification_requires_explicit_prefix():
+    result = parse_worker_reply(
+        "Alice: CLARIFY: Which event does 'it' refer to?"
+    )
+    assert result.action == "clarify"
+    assert result.body == "Which event does 'it' refer to?"
+
+    natural_question = parse_worker_reply("Alice: Do you mean the war?")
+    assert natural_question.action == "reply"
+
+
+def test_worker_clarification_accepts_case_and_optional_worker_prefix():
+    assert parse_worker_reply("clarify: Which date?").action == "clarify"
+    assert parse_worker_reply("Bob: clarify: Which date?").body == "Which date?"
+
+
+def test_empty_worker_clarification_is_ordinary_reply():
+    result = parse_worker_reply("Alice: CLARIFY:")
+    assert result.action == "reply"

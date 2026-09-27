@@ -67,7 +67,23 @@ def _mean_std_of_mean(values: Sequence[Sequence[float]]) -> Dict[str, float]:
 
 def _run_level_stats(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Mean/std of every scalar metric across all runs, plus all rates."""
+    first = runs[0] if runs else {}
+    architecture = first.get("architecture", "mas")
+    clarification_enabled = bool(
+        first.get("config", {})
+        .get("worker_clarification", {})
+        .get("enabled", False)
+    )
+    clarification_requests = sum(
+        int(r.get("num_clarification_requests", 0)) for r in runs
+    )
+    clarification_completed = sum(
+        int(r.get("num_clarification_round_trips_completed", 0))
+        for r in runs
+    )
     stats: Dict[str, Any] = {
+        "architecture": architecture,
+        "worker_clarification_enabled": clarification_enabled,
         "num_runs": len(runs),
         "f1": _mean_std([r["f1"] for r in runs]),
         "em": _mean_std([r["em"] for r in runs]),
@@ -91,6 +107,24 @@ def _run_level_stats(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
         "num_alice_queries": _mean_std([r["num_alice_queries"] for r in runs]),
         "num_bob_queries": _mean_std([r["num_bob_queries"] for r in runs]),
         "num_messages": _mean_std([r["num_messages"] for r in runs]),
+        "num_clarification_requests": _mean_std(
+            [r.get("num_clarification_requests", 0) for r in runs]
+        ),
+        "num_clarification_round_trips_completed": _mean_std(
+            [
+                r.get("num_clarification_round_trips_completed", 0)
+                for r in runs
+            ]
+        ),
+        "clarification_round_trip_completion": {
+            "rate": (
+                clarification_completed / clarification_requests
+                if clarification_requests
+                else 0.0
+            ),
+            "count": clarification_completed,
+            "n": clarification_requests,
+        },
         "rates": {
             "cap_rate": _rate(runs, "cap_reached"),
             "generation_cap_rate": _rate(runs, "generation_cap_reached"),
@@ -111,6 +145,12 @@ def _run_level_stats(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
             ),
             "terminal_final_precedence_fallback_rate": _rate(
                 runs, "terminal_final_precedence_fallback"
+            ),
+            "clarification_trigger_rate": _rate(
+                runs, "clarification_triggered"
+            ),
+            "clarification_protocol_violation_rate": _rate(
+                runs, "clarification_protocol_violations"
             ),
             "error_rate": _rate_term_reason(runs, "error"),
         },
@@ -165,6 +205,12 @@ def _per_question_stats(
                 "num_bob_queries": _mean_std(
                     [r["num_bob_queries"] for r in group]
                 ),
+                "num_clarification_requests": _mean_std(
+                    [r.get("num_clarification_requests", 0) for r in group]
+                ),
+                "clarification_trigger_count": sum(
+                    1 for r in group if r.get("clarification_triggered")
+                ),
                 "parse_error_count": sum(
                     1
                     for r in group
@@ -210,11 +256,19 @@ def _markdown_report(
 ) -> str:
     r = run_level
     rates = r["rates"]
+    centralized = r["architecture"] == "centralized_reader"
+    if centralized:
+        title = "# HotpotQA Centralized Reader Diagnostic — Report"
+    elif r["worker_clarification_enabled"]:
+        title = "# HotpotQA Worker-Clarification MAS Experiment — Report"
+    else:
+        title = "# HotpotQA 3-Agent MAS Base Experiment — Report"
     lines = [
-        "# HotpotQA 3-Agent MAS Base Experiment — Report",
+        title,
         "",
         f"source: `{source_path}`",
         f"runs: {r['num_runs']}",
+        f"architecture: `{r['architecture']}`",
         "",
         "## Answer quality",
         "",
@@ -227,7 +281,7 @@ def _markdown_report(
         f"{r['generated_tokens_alice']['mean']:.1f} ± {r['generated_tokens_alice']['std']:.1f}",
         f"- generated tokens, Bob (mean ± std): "
         f"{r['generated_tokens_bob']['mean']:.1f} ± {r['generated_tokens_bob']['std']:.1f}",
-        f"- generated tokens, Celab (mean ± std): "
+        f"- generated tokens, {'Reader' if centralized else 'Celab'} (mean ± std): "
         f"{r['generated_tokens_celab']['mean']:.1f} ± {r['generated_tokens_celab']['std']:.1f}",
         f"- total generated tokens (mean ± std): "
         f"{r['total_generated_tokens']['mean']:.1f} ± {r['total_generated_tokens']['std']:.1f}",
@@ -245,9 +299,23 @@ def _markdown_report(
         f"- messages (mean ± std): "
         f"{r['num_messages']['mean']:.2f} ± {r['num_messages']['std']:.2f}",
         "",
-        "## Rates",
-        "",
     ]
+    if r["worker_clarification_enabled"]:
+        completion = r["clarification_round_trip_completion"]
+        lines += [
+            "## Clarification",
+            "",
+            f"- clarification requests (mean ± std): "
+            f"{r['num_clarification_requests']['mean']:.2f} ± "
+            f"{r['num_clarification_requests']['std']:.2f}",
+            f"- completed clarification round trips (mean ± std): "
+            f"{r['num_clarification_round_trips_completed']['mean']:.2f} ± "
+            f"{r['num_clarification_round_trips_completed']['std']:.2f}",
+            f"- clarification round-trip completion rate: "
+            f"{completion['rate']:.4f} ({completion['count']}/{completion['n']})",
+            "",
+        ]
+    lines += ["## Rates", ""]
     for name, label in [
         ("cap_rate", "Cap Rate (decision cap reached)"),
         ("generation_cap_rate", "Generation Cap Rate"),
@@ -261,12 +329,28 @@ def _markdown_report(
             "terminal_final_precedence_fallback_rate",
             "Terminal Final Precedence Fallback Rate",
         ),
-        ("error_rate", "Error Rate"),
     ]:
         entry = rates[name]
         lines.append(
             f"- {label}: {entry['rate']:.4f} ({entry['count']}/{entry['n']})"
         )
+    if r["worker_clarification_enabled"]:
+        for name, label in [
+            ("clarification_trigger_rate", "Clarification Trigger Rate"),
+            (
+                "clarification_protocol_violation_rate",
+                "Clarification Protocol Violation Rate",
+            ),
+        ]:
+            entry = rates[name]
+            lines.append(
+                f"- {label}: {entry['rate']:.4f} "
+                f"({entry['count']}/{entry['n']})"
+            )
+    entry = rates["error_rate"]
+    lines.append(
+        f"- Error Rate: {entry['rate']:.4f} ({entry['count']}/{entry['n']})"
+    )
     lines += [
         "",
         "## Termination reasons",

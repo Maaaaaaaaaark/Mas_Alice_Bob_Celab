@@ -13,7 +13,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from hotpot_mas.config import ExperimentConfig  # noqa: E402
+from hotpot_mas.config import (  # noqa: E402
+    ExperimentConfig,
+    WorkerClarificationParams,
+)
 from hotpot_mas.model_engine import MockEngine  # noqa: E402
 from hotpot_mas.orchestrator import Orchestrator  # noqa: E402
 from hotpot_mas.prompts import PromptSet  # noqa: E402
@@ -85,9 +88,18 @@ def run_with_mock(
         max_decision_steps: int = 20,
         question: Optional[Dict[str, Any]] = None,
         run_seed: int = 0,
+        clarification_enabled: bool = False,
+        clarification_max_per_worker: int = 1,
     ) -> Any:
         engine = MockEngine(scripts=scripts or dict(NATURAL_SCRIPTS), cap_speakers=cap_speakers)
-        cfg = replace(base_config, max_decision_steps=max_decision_steps)
+        cfg = replace(
+            base_config,
+            max_decision_steps=max_decision_steps,
+            worker_clarification=WorkerClarificationParams(
+                enabled=clarification_enabled,
+                max_per_worker=clarification_max_per_worker,
+            ),
+        )
         orchestrator = Orchestrator(
             cfg, prompts, engine, {"environment": "mock-test"}
         )

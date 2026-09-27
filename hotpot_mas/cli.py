@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .config import ExperimentConfig
+from .diagnostics import write_diagnostic_report
 from .question_selection import build_manifest
 from .report import write_report
 
@@ -80,6 +81,24 @@ def _cmd_report(args: argparse.Namespace) -> None:
         print(f"  {name}: {path}")
 
 
+def _cmd_diagnose(args: argparse.Namespace) -> None:
+    from .config import REPO_ROOT
+
+    def resolve(value: str) -> Path:
+        path = Path(value)
+        return path if path.is_absolute() else REPO_ROOT / path
+
+    paths = write_diagnostic_report(
+        resolve(args.baseline),
+        resolve(args.clarification),
+        resolve(args.centralized),
+        resolve(args.output_dir),
+    )
+    print("diagnostic files written:")
+    for name, path in paths.items():
+        print(f"  {name}: {path}")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m hotpot_mas.cli",
@@ -127,6 +146,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     rep.add_argument("--runs", required=True, help="path to runs.jsonl")
     rep.set_defaults(func=_cmd_report)
+
+    diagnose = subparsers.add_parser(
+        "diagnose",
+        help="compare baseline, clarification, and centralized-reader runs",
+    )
+    diagnose.add_argument("--baseline", required=True, help="baseline runs.jsonl")
+    diagnose.add_argument(
+        "--clarification", required=True, help="clarification runs.jsonl"
+    )
+    diagnose.add_argument(
+        "--centralized", required=True, help="centralized-reader runs.jsonl"
+    )
+    diagnose.add_argument(
+        "--output-dir",
+        default="outputs/hotpotqa_diagnostics/reading_vs_communication",
+        help="directory for the English diagnostic report and JSON summary",
+    )
+    diagnose.set_defaults(func=_cmd_diagnose)
     return parser
 
 

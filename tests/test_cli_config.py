@@ -72,3 +72,47 @@ def test_invalid_engine_is_rejected(base_config):
     base_config.engine = "unknown"
     with pytest.raises(ValueError, match="engine must be"):
         base_config.validate()
+
+
+def test_clarification_config_is_isolated_from_base():
+    base = ExperimentConfig.from_yaml("configs/protocol_fallback.yaml")
+    clarification = ExperimentConfig.from_yaml("configs/clarification.yaml")
+    assert base.architecture == clarification.architecture == "mas"
+    assert base.worker_clarification.enabled is False
+    assert clarification.worker_clarification.enabled is True
+    assert clarification.worker_clarification.max_per_worker == 1
+    assert clarification.experiment_version == "v7_worker_clarification"
+    assert clarification.model_name == base.model_name
+    assert clarification.model_revision == base.model_revision
+    assert clarification.tokenizer_revision == base.tokenizer_revision
+    assert clarification.generation.to_dict() == base.generation.to_dict()
+    assert clarification.run_seeds == base.run_seeds
+
+
+def test_centralized_reader_config_uses_same_model_data_and_decoding():
+    base = ExperimentConfig.from_yaml("configs/protocol_fallback.yaml")
+    centralized = ExperimentConfig.from_yaml("configs/centralized_reader.yaml")
+    assert centralized.architecture == "centralized_reader"
+    assert centralized.worker_clarification.enabled is False
+    assert centralized.model_name == base.model_name
+    assert centralized.model_revision == base.model_revision
+    assert centralized.tokenizer_revision == base.tokenizer_revision
+    assert centralized.generation.to_dict() == base.generation.to_dict()
+    assert centralized.manifest_path == base.manifest_path
+    assert centralized.run_seeds == base.run_seeds
+
+
+def test_diagnose_cli_accepts_three_run_files():
+    args = _build_parser().parse_args(
+        [
+            "diagnose",
+            "--baseline",
+            "base.jsonl",
+            "--clarification",
+            "clarification.jsonl",
+            "--centralized",
+            "centralized.jsonl",
+        ]
+    )
+    assert args.baseline == "base.jsonl"
+    assert args.output_dir.endswith("reading_vs_communication")

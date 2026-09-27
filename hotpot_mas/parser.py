@@ -15,9 +15,9 @@ v4 pilot without inferring an action from natural language:
   wins over those earlier route markers (the model emitted an entire action
   sequence in one generation and ended it with an explicit final answer).
 
-Incomplete route markers are deliberately not accepted. Worker outputs are
-never parsed; marker-looking text inside a worker reply has no effect on
-routing or termination.
+Incomplete route markers are deliberately not accepted. The optional worker
+clarification classifier recognizes only an explicit leading ``CLARIFY:``;
+it never interprets ordinary worker prose as a scheduler action.
 
 Design choices recorded here: a repeated route marker without a later final
 is ambiguous; ``<FINAL></FINAL>`` is a *valid* final with an empty prediction.
@@ -37,6 +37,10 @@ ROUTE_CASEFOLD_RE = re.compile(r"<TO>(ALICE|BOB)</TO>", re.IGNORECASE)
 FINAL_RE = re.compile(r"<FINAL>(.*?)</FINAL>", re.DOTALL)
 FINAL_OPEN = "<FINAL>"
 FINAL_CLOSE = "</FINAL>"
+WORKER_CLARIFY_RE = re.compile(
+    r"^\s*(?:(?:Alice|Bob)\s*:\s*)?CLARIFY\s*:\s*(.+?)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 @dataclass
@@ -45,6 +49,27 @@ class ParseResult:
     body: Optional[str]  # inner <FINAL> text when action == "final"
     status: str  # "ok" | an audited ``ok_*_fallback`` | "error"
     error: Optional[str]
+
+
+@dataclass
+class WorkerReplyResult:
+    """Classification of a worker reply for the optional clarification flow."""
+
+    action: str  # "reply" | "clarify"
+    body: str
+
+
+def parse_worker_reply(text: str) -> WorkerReplyResult:
+    """Recognize an explicit CLARIFY request; all other text is a reply.
+
+    This parser is deliberately non-fatal. Worker prose remains free-form,
+    and a natural-language question without the ``CLARIFY:`` prefix does not
+    alter the scheduler.
+    """
+    match = WORKER_CLARIFY_RE.match(text)
+    if match:
+        return WorkerReplyResult("clarify", match.group(1).strip())
+    return WorkerReplyResult("reply", text)
 
 
 def parse_celab_output(text: str) -> ParseResult:

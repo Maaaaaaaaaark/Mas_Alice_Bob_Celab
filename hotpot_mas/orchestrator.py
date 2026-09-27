@@ -21,8 +21,10 @@ State machine for one (question, run_seed) trajectory:
 
 The parser may apply only its explicitly logged protocol compatibility
 fallbacks; natural-language actions are never guessed, rewritten, or
-retried. Worker outputs are never parsed; marker-looking text inside a
-worker reply has no effect on routing or termination.
+retried. In the optional clarification condition, worker outputs are only
+classified when they begin with the explicit ``CLARIFY:`` action. Other
+worker text, including marker-looking text, remains free-form and cannot
+terminate the run.
 
 Token accounting (spec sec. 12): ``generated_tokens`` of each event comes
 from the engine (real tokenizer for HFEngine); ``total_generated_tokens``
@@ -38,7 +40,7 @@ from typing import Any, Dict, List, Optional
 from .agents import Agent, make_agents
 from .evaluation import evaluate_answer
 from .messages import Event, Message
-from .parser import extract_final_answer, parse_celab_output
+from .parser import extract_final_answer, parse_celab_output, parse_worker_reply
 from .seeds import seed_all
 
 
@@ -126,6 +128,7 @@ class Orchestrator:
         return {
             "experiment_id": self.cfg.experiment_id,
             "experiment_version": self.cfg.experiment_version,
+            "architecture": self.cfg.architecture,
             "run_id": run_id,
             "dataset": self.cfg.dataset,
             "dataset_split": self.cfg.dataset_split,
@@ -163,6 +166,150 @@ class Orchestrator:
             "events": [],
         }
 
+    def _run_centralized_one(
+        self,
+        question: Dict[str, Any],
+        run_index: int,
+        run_seed: int,
+        run_id: str,
+    ) -> Dict[str, Any]:
+        """Run the one-model, full-evidence diagnostic condition."""
+        record = self._base_record(question, run_index, run_seed, run_id)
+        events: List[Event] = []
+        started = time.time()
+        seed_all(run_seed)
+        reader = Agent(
+            "celab",
+            self.prompts.render("centralized_system"),
+            self.engine,
+            run_seed,
+        )
+        task = self.prompts.render(
+            "centralized_task",
+            question=question["question"],
+            evidence_alice=question["evidence_alice"],
+            evidence_bob=question["evidence_bob"],
+        )
+        task_message = Message(
+            message_id=reader.next_message_id(),
+            speaker="controller",
+            recipient="celab",
+            content=task,
+        )
+        reader.add_message(task_message)
+        events.append(
+            self._controller_event(
+                0,
+                "centralized_task",
+                decision_step=None,
+                message_id=task_message.message_id,
+                note="question and both evidence documents delivered to reader",
+            )
+        )
+
+        final_answer: Optional[str] = None
+        final_raw_output: Optional[str] = None
+        error_message: Optional[str] = None
+        result: Any = None
+        try:
+            result = reader.generate()
+            final_raw_output = result.raw_output
+            final_answer = result.raw_output.strip()
+            message_id = reader.next_message_id()
+            events.append(
+                self._generation_event(
+                    len(events),
+                    reader,
+                    result,
+                    1,
+                    reader.visible_message_ids(),
+                    parsed_action="direct_answer",
+                    parsed_body=final_answer,
+                    parse_status="not_required",
+                    message_id=message_id,
+                )
+            )
+            termination_reason = "direct_answer"
+        except Exception as exc:  # noqa: BLE001
+            termination_reason = "error"
+            error_message = str(exc)
+            events.append(
+                self._controller_event(
+                    len(events),
+                    "error_termination",
+                    decision_step=1,
+                    note=f"centralized reader aborted by exception: {exc}",
+                )
+            )
+
+        f1, em = evaluate_answer(final_answer, question["answer"])
+        input_tokens = result.input_tokens if result is not None else 0
+        generated_tokens = result.generated_tokens if result is not None else 0
+        generation_cap = bool(
+            result is not None and result.generation_cap_reached
+        )
+        record.update(
+            {
+                "decision_steps": 1,
+                "cap_reached": False,
+                "decision_cap_reached": False,
+                "generation_cap_reached": generation_cap,
+                "forced_final_calls": 0,
+                "natural_termination": termination_reason == "direct_answer",
+                "termination_reason": termination_reason,
+                "final_raw_output": final_raw_output,
+                "final_answer": final_answer,
+                "final_answer_extracted": final_answer,
+                "final_parse_fallback": False,
+                "protocol_parse_fallback": False,
+                "parse_fallback_events": 0,
+                "parse_fallback_statuses": [],
+                "casefold_route_fallback": False,
+                "terminal_final_precedence_fallback": False,
+                "parse_status": "not_required" if result is not None else "error",
+                "parse_error": None,
+                "f1": f1,
+                "em": em,
+                "answer_f1": f1,
+                "answer_em": em,
+                "num_alice_queries": 0,
+                "num_bob_queries": 0,
+                "num_total_queries": 0,
+                "num_alice_responses": 0,
+                "num_bob_responses": 0,
+                "num_messages": 1 if result is not None else 0,
+                "num_alice_clarification_requests": 0,
+                "num_bob_clarification_requests": 0,
+                "num_clarification_requests": 0,
+                "num_clarification_round_trips_completed": 0,
+                "clarification_protocol_violations": 0,
+                "ignored_clarification_requests": 0,
+                "clarification_triggered": False,
+                "generation_cap_agents": ["celab"] if generation_cap else [],
+                "generation_cap_events": 1 if generation_cap else 0,
+                "input_tokens_alice": 0,
+                "input_tokens_bob": 0,
+                "input_tokens_celab": input_tokens,
+                "input_tokens_total": input_tokens,
+                "alice_input_tokens": 0,
+                "bob_input_tokens": 0,
+                "celab_input_tokens": input_tokens,
+                "total_input_tokens": input_tokens,
+                "generated_tokens_alice": 0,
+                "generated_tokens_bob": 0,
+                "generated_tokens_celab": generated_tokens,
+                "total_generated_tokens": generated_tokens,
+                "alice_generated_tokens": 0,
+                "bob_generated_tokens": 0,
+                "celab_generated_tokens": generated_tokens,
+                "total_model_tokens": input_tokens + generated_tokens,
+                "duration_seconds": round(time.time() - started, 3),
+                "error": error_message,
+            }
+        )
+        record["events"] = [event.to_dict() for event in events]
+        return record
+
     # -- the state machine --------------------------------------------------
 
     def run_one(
@@ -172,6 +319,10 @@ class Orchestrator:
         run_seed: int,
         run_id: str,
     ) -> Dict[str, Any]:
+        if self.cfg.architecture == "centralized_reader":
+            return self._run_centralized_one(
+                question, run_index, run_seed, run_id
+            )
         record = self._base_record(question, run_index, run_seed, run_id)
         events: List[Event] = []
         started = time.time()
@@ -200,6 +351,11 @@ class Orchestrator:
             "generation_cap_events": 0,
             "parse_fallback_events": 0,
             "parse_fallback_statuses": [],
+            "num_alice_clarification_requests": 0,
+            "num_bob_clarification_requests": 0,
+            "num_clarification_round_trips_completed": 0,
+            "clarification_protocol_violations": 0,
+            "ignored_clarification_requests": 0,
         }
         token_sums: Dict[str, int] = {
             "input_tokens_alice": 0,
@@ -218,6 +374,8 @@ class Orchestrator:
         parse_status = "not_parsed"
         parse_error: Optional[str] = None
         error_message: Optional[str] = None
+        clarification_counts = {"alice": 0, "bob": 0}
+        expected_clarification_target: Optional[str] = None
 
         def add_event(event: Event) -> None:
             event.event_index = len(events)
@@ -280,6 +438,19 @@ class Orchestrator:
                 result = celab.generate()
                 celab_message_id = celab.next_message_id()
                 parsed = parse_celab_output(result.raw_output)
+
+                # A clarification request gives Celab one opportunity to
+                # respond to the same worker. This is observed and logged,
+                # not enforced by rewriting or retrying the model output.
+                if expected_clarification_target is not None:
+                    expected_action = f"ask_{expected_clarification_target}"
+                    if parsed.action == expected_action:
+                        counters[
+                            "num_clarification_round_trips_completed"
+                        ] += 1
+                    else:
+                        counters["clarification_protocol_violations"] += 1
+                    expected_clarification_target = None
 
                 if parsed.status == "error":
                     # Parse error: keep raw output, end the run (spec sec. 7).
@@ -355,12 +526,37 @@ class Orchestrator:
                 worker_result = worker.generate()
                 worker_message_id = worker.next_message_id()
                 counters[f"num_{worker_name}_responses"] += 1
+                worker_parsed_action = None
+                worker_parsed_body = None
+                worker_parse_status = "not_parsed"
+                if self.cfg.worker_clarification.enabled:
+                    worker_parsed = parse_worker_reply(worker_result.raw_output)
+                    if worker_parsed.action == "clarify":
+                        if (
+                            clarification_counts[worker_name]
+                            < self.cfg.worker_clarification.max_per_worker
+                        ):
+                            clarification_counts[worker_name] += 1
+                            counters[
+                                f"num_{worker_name}_clarification_requests"
+                            ] += 1
+                            expected_clarification_target = worker_name
+                            worker_parsed_action = "clarify"
+                            worker_parsed_body = worker_parsed.body
+                            worker_parse_status = "worker_clarification"
+                        else:
+                            counters["ignored_clarification_requests"] += 1
+                            worker_parse_status = (
+                                "worker_clarification_ignored_limit"
+                            )
                 record_generation(
                     worker,
                     worker_result,
                     decision_steps,
                     worker_message_id,
-                    parse_status="not_parsed",
+                    parsed_action=worker_parsed_action,
+                    parsed_body=worker_parsed_body,
+                    parse_status=worker_parse_status,
                     recipient="celab",
                 )
                 reply_message = Message(
@@ -378,6 +574,9 @@ class Orchestrator:
                 decision_steps >= self.cfg.max_decision_steps
                 and termination_reason is None
             ):
+                if expected_clarification_target is not None:
+                    counters["clarification_protocol_violations"] += 1
+                    expected_clarification_target = None
                 counters["forced_final_calls"] = 1
                 add_event(
                     self._controller_event(
@@ -511,6 +710,29 @@ class Orchestrator:
                 "num_alice_responses": counters["num_alice_responses"],
                 "num_bob_responses": counters["num_bob_responses"],
                 "num_messages": counters["num_messages"],
+                "num_alice_clarification_requests": counters[
+                    "num_alice_clarification_requests"
+                ],
+                "num_bob_clarification_requests": counters[
+                    "num_bob_clarification_requests"
+                ],
+                "num_clarification_requests": (
+                    counters["num_alice_clarification_requests"]
+                    + counters["num_bob_clarification_requests"]
+                ),
+                "num_clarification_round_trips_completed": counters[
+                    "num_clarification_round_trips_completed"
+                ],
+                "clarification_protocol_violations": counters[
+                    "clarification_protocol_violations"
+                ],
+                "ignored_clarification_requests": counters[
+                    "ignored_clarification_requests"
+                ],
+                "clarification_triggered": bool(
+                    counters["num_alice_clarification_requests"]
+                    + counters["num_bob_clarification_requests"]
+                ),
                 "generation_cap_agents": counters["generation_cap_agents"],
                 "generation_cap_events": counters["generation_cap_events"],
                 "input_tokens_alice": token_sums["input_tokens_alice"],

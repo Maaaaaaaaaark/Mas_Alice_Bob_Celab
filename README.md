@@ -65,8 +65,16 @@ D:\Base_Experiment_hotpot_mas\
         ├── summary_run_level.json        # mean/std over all runs + all rates
         ├── summary_per_question.json     # per-question means/stds
         ├── summary_dataset.json          # dataset-level (over per-question means)
-        └── report.md                     # human-readable report
+    └── report.md                     # human-readable English report
 ```
+
+Two diagnostic conditions are also available:
+
+- `configs/clarification.yaml`: the three-agent topology with one optional
+  `CLARIFY:` request per worker and logged clarification completion/violation
+  metrics;
+- `configs/centralized_reader.yaml`: one call to the same frozen Gemma model
+  with the original question and both relevant evidence documents.
 
 ## 2. Installation (on the GPU machine)
 
@@ -99,6 +107,16 @@ python -m hotpot_mas.cli run --config configs/base.yaml --mode small
 # Stage 4 full: 100 questions x 10 runs (seeds 0..9)
 python -m hotpot_mas.cli run --config configs/base.yaml --mode full
 
+# Matched 20-question x 2-seed diagnostic pilots
+python -m hotpot_mas.cli run --config configs/clarification.yaml --mode pilot
+python -m hotpot_mas.cli run --config configs/centralized_reader.yaml --mode pilot
+
+# English paired diagnostic report (run after both pilots finish)
+python -m hotpot_mas.cli diagnose \
+  --baseline outputs/hotpotqa_base_mas/v6_protocol_fallback/runs.jsonl \
+  --clarification outputs/hotpotqa_base_mas/v7_worker_clarification/runs.jsonl \
+  --centralized outputs/hotpotqa_centralized_reader/v1/runs.jsonl
+
 # Tests (no GPU needed; MockEngine)
 pytest tests/
 
@@ -118,6 +136,10 @@ CLI overrides for `run`: `--questions N`, `--runs N`, `--seeds 0,1,2`.
 | Per-question summary | `outputs/hotpotqa_base_mas/v4/summary_per_question.json` |
 | Dataset summary | `outputs/hotpotqa_base_mas/v4/summary_dataset.json` |
 | Human-readable report | `outputs/hotpotqa_base_mas/v4/report.md` |
+
+The new condition reports are written beside their `runs.jsonl` files. The
+paired English diagnostic is written to
+`outputs/hotpotqa_diagnostics/reading_vs_communication/diagnostic_report.md`.
 
 Each `runs.jsonl` line is a full run record per spec sec. 15: run identity,
 question + private evidence, prompt version/hashes, resolved config,

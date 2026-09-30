@@ -77,6 +77,12 @@ def _run_level_stats(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
     shared_question = bool(
         first.get("config", {}).get("share_question_with_workers", False)
     )
+    evidence_partition = first.get("config", {}).get(
+        "evidence_partition", "supporting_only"
+    )
+    model_instance_mode = first.get("config", {}).get(
+        "model_instance_mode", "shared"
+    )
     clarification_requests = sum(
         int(r.get("num_clarification_requests", 0)) for r in runs
     )
@@ -88,6 +94,9 @@ def _run_level_stats(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
         "architecture": architecture,
         "worker_clarification_enabled": clarification_enabled,
         "share_question_with_workers": shared_question,
+        "evidence_partition": evidence_partition,
+        "partition_seed": first.get("config", {}).get("partition_seed", 0),
+        "model_instance_mode": model_instance_mode,
         "num_runs": len(runs),
         "f1": _mean_std([r["f1"] for r in runs]),
         "em": _mean_std([r["em"] for r in runs]),
@@ -279,6 +288,8 @@ def _markdown_report(
         f"source: `{source_path}`",
         f"runs: {r['num_runs']}",
         f"architecture: `{r['architecture']}`",
+        f"evidence partition: `{r['evidence_partition']}`",
+        f"model instances: `{r['model_instance_mode']}`",
         "",
         "## Answer quality",
         "",

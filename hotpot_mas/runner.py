@@ -79,8 +79,10 @@ def run_fingerprint(
     return hashlib.sha256(encoded).hexdigest()
 
 
-def build_engine(cfg: ExperimentConfig) -> ModelEngine:
-    """Construct the shared frozen model engine (one instance per process)."""
+def build_engine(
+    cfg: ExperimentConfig, device: str | None = None
+) -> ModelEngine:
+    """Construct one frozen model engine."""
     if cfg.engine == "vllm":
         return VLLMEngine(
             model_name=cfg.model_name,
@@ -96,7 +98,7 @@ def build_engine(cfg: ExperimentConfig) -> ModelEngine:
         model_name=cfg.model_name,
         generation_params=cfg.generation,
         dtype=cfg.dtype,
-        device=cfg.device,
+        device=device or cfg.device,
         attn_implementation=cfg.attn_implementation,
         model_revision=cfg.model_revision,
         tokenizer_revision=cfg.tokenizer_revision,
@@ -104,10 +106,45 @@ def build_engine(cfg: ExperimentConfig) -> ModelEngine:
     )
 
 
+def build_engines(cfg: ExperimentConfig) -> ModelEngine | Dict[str, ModelEngine]:
+    """Build one shared engine or three physically independent model copies."""
+    if cfg.model_instance_mode == "shared":
+        return build_engine(cfg)
+    return {
+        name: build_engine(cfg, device=cfg.agent_devices[name])
+        for name in ("alice", "bob", "celab")
+    }
+
+
+def engine_metadata(
+    engine: ModelEngine | Dict[str, ModelEngine]
+) -> Dict[str, Any]:
+    """Describe model-instance topology for logs and trajectory hashes."""
+    if not isinstance(engine, dict):
+        # Preserve the legacy payload so old shared-engine runs can still be
+        # resumed without a false fingerprint mismatch.
+        return dict(engine.info())
+    by_agent = {
+        name: dict(agent_engine.info())
+        for name, agent_engine in sorted(engine.items())
+    }
+    info = dict(by_agent.get("celab", next(iter(by_agent.values()))))
+    info.update(
+        {
+            "model_instance_mode": "independent",
+            "physical_model_instances": len(
+                {id(agent_engine) for agent_engine in engine.values()}
+            ),
+            "by_agent": by_agent,
+        }
+    )
+    return info
+
+
 def run_experiment(
     cfg: ExperimentConfig,
     questions: List[Any],
-    engine: ModelEngine,
+    engine: ModelEngine | Dict[str, ModelEngine],
     environment_info: Dict[str, Any],
     prompts: PromptSet,
     runs_path: Path,
@@ -124,10 +161,20 @@ def run_experiment(
     skipped = 0
     run_start = time.time()
 
-    engine_info = engine.info()
-    tqdm.write("model engine ready:")
-    for key, value in engine_info.items():
-        tqdm.write(f"  {key}: {value}")
+    engine_info = engine_metadata(engine)
+    tqdm.write("model engine(s) ready:")
+    if isinstance(engine, dict):
+        tqdm.write(
+            "  topology: three independent physical model instances"
+        )
+        for name, info in engine_info["by_agent"].items():
+            tqdm.write(
+                f"  {name}: {info.get('model_name')} on "
+                f"{info.get('device')} ({info.get('dtype')})"
+            )
+    else:
+        for key, value in engine_info.items():
+            tqdm.write(f"  {key}: {value}")
     tqdm.write(
         f"experiment: {cfg.experiment_id}/{cfg.experiment_version} | "
         f"{len(questions)} questions x {cfg.runs_per_question} runs | "
@@ -187,7 +234,14 @@ def run_experiment(
 def run_from_config(cfg: ExperimentConfig) -> None:
     """Load everything and run the experiment end to end."""
     tqdm.write(f"loading manifest: {cfg.manifest_path}")
-    questions = [asdict(q) for q in load_manifest(cfg.manifest_path)]
+    questions = []
+    for selected in load_manifest(cfg.manifest_path):
+        question = asdict(selected)
+        # The field was added for distractor controls. Omitting its empty
+        # legacy default preserves old shared-engine run fingerprints.
+        if not question.get("evidence_all"):
+            question.pop("evidence_all", None)
+        questions.append(question)
     if cfg.num_questions and len(questions) > cfg.num_questions:
         questions = questions[: cfg.num_questions]
     if len(questions) < cfg.num_questions:
@@ -210,7 +264,7 @@ def run_from_config(cfg: ExperimentConfig) -> None:
     tqdm.write(f"prompts loaded, prompt_version={prompts.version}")
     environment_info = collect_environment_info()
     tqdm.write("environment collected")
-    engine = build_engine(cfg)
+    engine = build_engines(cfg)
 
     runs_path = cfg.output_subdir() / "runs.jsonl"
     run_experiment(cfg, questions, engine, environment_info, prompts, runs_path)

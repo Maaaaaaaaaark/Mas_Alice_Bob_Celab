@@ -51,6 +51,8 @@ def _cmd_prepare_questions(args: argparse.Namespace) -> None:
         num_questions=cfg.num_questions,
         selection_seed=cfg.sample_selection_seed,
         manifest_path=cfg.manifest_path,
+        evidence_partition=cfg.evidence_partition,
+        partition_seed=cfg.partition_seed,
     )
     print(
         f"manifest written to {cfg.manifest_path}: "
@@ -120,6 +122,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="download HotpotQA validation and write the question manifest",
     )
     add_config(prep)
+    prep.add_argument(
+        "--mode",
+        help="optional preparation mode from the config",
+    )
+    prep.add_argument(
+        "--questions", dest="num_questions", type=int,
+        help="override the number of questions written to the manifest",
+    )
     prep.set_defaults(func=_cmd_prepare_questions)
 
     run = subparsers.add_parser(
@@ -128,7 +138,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add_config(run)
     run.add_argument(
         "--mode",
-        choices=["smoke", "small", "pilot", "full"],
+        choices=["smoke", "small", "pilot", "benchmark", "full"],
         help="run mode from the config (overrides questions/runs/seeds)",
     )
     run.add_argument(

@@ -1,0 +1,5 @@
+Question:
+$question
+
+Candidate evidence passages:
+$evidence_all

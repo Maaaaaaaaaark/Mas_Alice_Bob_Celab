@@ -300,7 +300,7 @@ run's `engine_info`.
 | Agent abstraction (name/memory/independent step) | Reimplemented | 3 agents + strict context isolation |
 | OPTIMA vLLM/name-prefix protocol | Not reused | v5 uses our same MAS protocol through vLLM; prefixes remain model-generated |
 | `cal_f1_score` (LLM-tokenizer F1) | Not used | not the official evaluator; official normalize/F1/EM ported verbatim |
-| HotpotQA field handling | Reimplemented | supporting docs only, no distractors, split across workers |
+| HotpotQA field handling | Reimplemented | legacy runs use supporting-only evidence; distractor controls use all original 10 documents with an audited balanced partition |
 | `<A>` parser / math parser / boxed | Not used | minimal `<TO>`/`<FINAL>` parser |
 | JSONL append / resumable logging | Reimplemented (idea kept) | spec sec. 15 schema |
 | reward/PPL/DPO/SFT, token-pressure prompts, two-agent alternation | Not used | excluded by spec |
@@ -325,3 +325,42 @@ run's `engine_info`.
   their resolved revisions are also logged at run time.
 - **Dataset download**: `prepare-questions` downloads the Parquet-backed
   HotpotQA dataset from the Hugging Face Hub; no remote dataset code is run.
+
+## 11. Balanced HotpotQA distractor experiments
+
+`configs/one_shot_direct_answer_distractor.yaml` preserves the V10 fixed
+Alice-once, Bob-once, C-once schedule. Each worker receives five unlabelled
+candidate documents: one supporting document and four distractors. The three
+agents use separately loaded frozen Gemma-3-1B instances on logical CUDA
+devices 0, 1, and 2.
+
+`configs/single_agent_distractor.yaml` is the paired single-reader control. It
+receives the same question and the union of all ten unlabelled documents in a
+separate deterministic order. Both conditions use the same partition manifest,
+question order, run seeds, checkpoint, and decoding settings.
+
+Build the full 7,405-question distractor manifest once:
+
+```bash
+HF_HOME=/data/yuheng/cache python -m hotpot_mas.cli prepare-questions \
+  --config configs/one_shot_direct_answer_distractor.yaml
+```
+
+Before a full run, use smoke mode. Exposing physical GPUs 1, 2, and 3 makes
+them logical `cuda:0`, `cuda:1`, and `cuda:2` inside the process:
+
+```bash
+CUDA_VISIBLE_DEVICES=1,2,3 HF_HOME=/data/yuheng/cache \
+python -m hotpot_mas.cli run \
+  --config configs/one_shot_direct_answer_distractor.yaml --mode smoke
+
+CUDA_VISIBLE_DEVICES=1 HF_HOME=/data/yuheng/cache \
+python -m hotpot_mas.cli run \
+  --config configs/single_agent_distractor.yaml --mode smoke
+```
+
+Use `--mode benchmark` for the previous 100-question × 10-seed scale and
+`--mode full` for 7,405 questions × 10 seeds. Partition assignment and document
+order depend only on `partition_seed` and question ID, never on the generation
+seed. Gold/distractor labels are logged in the manifest for auditing but are
+not included in model prompts.

@@ -1,0 +1,47 @@
+# Single-agent HotpotQA distractor control. One frozen Gemma instance sees the
+# question and all ten unlabelled candidate documents in one call.
+
+experiment_id: hotpotqa_single_agent_distractor
+experiment_version: v1
+architecture: centralized_reader
+share_question_with_workers: false
+
+dataset: hotpot_qa
+dataset_config: distractor
+dataset_split: validation
+num_questions: 7405
+runs_per_question: 10
+run_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+sample_selection_seed: 0
+evidence_partition: balanced_distractor
+partition_seed: 0
+
+model_name: google/gemma-3-1b-it
+model_revision: dcc83ea841ab6100d6b47a070329e1ba4cf78752
+tokenizer_revision: dcc83ea841ab6100d6b47a070329e1ba4cf78752
+engine: transformers
+dtype: float16
+device: cuda:0
+model_instance_mode: shared
+attn_implementation: null
+max_input_length: 30000
+generation:
+  do_sample: true
+  temperature: 0.6
+  top_p: 0.95
+  max_new_tokens: 2048
+
+max_decision_steps: 20
+worker_clarification:
+  enabled: false
+  max_per_worker: 1
+prompt_dir: prompts_single_agent_distractor
+manifest_path: outputs/question_manifest_distractor.json
+output_dir: outputs
+
+modes:
+  smoke: {num_questions: 1, runs_per_question: 1, run_seeds: [0]}
+  small: {num_questions: 5, runs_per_question: 2, run_seeds: [0, 1]}
+  pilot: {num_questions: 20, runs_per_question: 2, run_seeds: [0, 1]}
+  benchmark: {num_questions: 100, runs_per_question: 10, run_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]}
+  full: {num_questions: 7405, runs_per_question: 10, run_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]}

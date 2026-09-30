@@ -1,7 +1,8 @@
 """Model engines (spec sec. 12).
 
-``ModelEngine`` is the abstraction the orchestrator talks to; the whole
-experiment shares ONE frozen model instance across the three logical agents.
+``ModelEngine`` is the abstraction the orchestrator talks to. Legacy
+experiments share one frozen model instance, while independent-instance
+experiments construct one engine per agent on explicitly configured devices.
 
 ``HFEngine``:
 - loads Gemma-3-1B-IT once (fp16 by default), never fine-tunes;
@@ -67,7 +68,7 @@ def _normalize_eos_ids(value: Any) -> List[int]:
 
 
 class HFEngine(ModelEngine):
-    """One shared frozen HuggingFace model behind three logical agents."""
+    """One frozen HuggingFace model instance on one configured device."""
 
     def __init__(
         self,

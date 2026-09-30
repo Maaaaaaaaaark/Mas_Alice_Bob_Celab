@@ -164,6 +164,65 @@ def test_one_shot_direct_answer_needs_no_protocol_marker(
     assert final_event["parse_status"] == "not_required"
 
 
+def test_one_shot_direct_answer_routes_to_three_physical_engines(
+    base_config, sample_question
+):
+    root = Path(__file__).resolve().parent.parent
+    prompts = PromptSet(
+        root / "prompts_one_shot_direct", names=ONE_SHOT_PROMPT_NAMES
+    )
+    engines = {
+        "alice": MockEngine(scripts={"alice": ["Alice: alpha report"]}),
+        "bob": MockEngine(scripts={"bob": ["Bob: beta report"]}),
+        "celab": MockEngine(scripts={"celab": ["The Connector Bridge"]}),
+    }
+    cfg = replace(
+        base_config,
+        architecture="one_shot_direct_answer",
+        share_question_with_workers=True,
+        model_instance_mode="independent",
+        agent_devices={
+            "alice": "cuda:0",
+            "bob": "cuda:1",
+            "celab": "cuda:2",
+        },
+    )
+    record = Orchestrator(cfg, prompts, engines, {}).run_one(
+        sample_question, 0, 0, "three-engine-run"
+    )
+    assert len(engines["alice"].calls) == 1
+    assert len(engines["bob"].calls) == 1
+    assert len(engines["celab"].calls) == 1
+    assert engines["alice"].calls[0].speaker == "alice"
+    assert engines["bob"].calls[0].speaker == "bob"
+    assert engines["celab"].calls[0].speaker == "celab"
+    assert record["engine_info"]["model_instance_mode"] == "independent"
+    assert record["engine_info"]["physical_model_instances"] == 3
+    assert set(record["engine_info_by_agent"]) == {"alice", "bob", "celab"}
+
+
+def test_centralized_reader_uses_all_candidate_evidence(
+    base_config, sample_question
+):
+    root = Path(__file__).resolve().parent.parent
+    prompts = PromptSet(
+        root / "prompts_single_agent_distractor",
+        names=CENTRALIZED_PROMPT_NAMES,
+    )
+    question = dict(sample_question)
+    question["evidence_all"] = "ALL_TEN_DOCUMENTS_MARKER"
+    engine = MockEngine(scripts={"celab": ["The Connector Bridge"]})
+    cfg = replace(base_config, architecture="centralized_reader")
+    record = Orchestrator(cfg, prompts, engine, {}).run_one(
+        question, 0, 0, "single-distractor-run"
+    )
+    rendered = "\n".join(
+        message["content"] for message in engine.calls[0].messages
+    )
+    assert "ALL_TEN_DOCUMENTS_MARKER" in rendered
+    assert record["final_answer"] == "The Connector Bridge"
+
+
 def test_natural_unclosed_final_uses_audited_fallback(run_with_mock):
     record, _ = run_with_mock(
         scripts={"celab": ["Celab: <FINAL>The Connector Bridge"]}

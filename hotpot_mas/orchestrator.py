@@ -59,6 +59,33 @@ class Orchestrator:
         self.engine = engine
         self.environment_info = environment_info
 
+    def _engine_for(self, agent_name: str) -> Any:
+        if isinstance(self.engine, dict):
+            return self.engine[agent_name]
+        return self.engine
+
+    def _engine_info(self) -> Dict[str, Any]:
+        """Return auditable shared or per-agent physical-engine metadata."""
+        if not isinstance(self.engine, dict):
+            # Preserve the legacy engine-info payload exactly so existing
+            # shared-engine trajectory fingerprints remain resumable.
+            return dict(self.engine.info())
+        by_agent = {
+            name: dict(engine.info())
+            for name, engine in sorted(self.engine.items())
+        }
+        primary = dict(by_agent.get("celab", next(iter(by_agent.values()))))
+        primary.update(
+            {
+                "model_instance_mode": "independent",
+                "physical_model_instances": len(
+                    {id(engine) for engine in self.engine.values()}
+                ),
+                "by_agent": by_agent,
+            }
+        )
+        return primary
+
     # -- record assembly helpers -------------------------------------------
 
     def _controller_event(
@@ -125,7 +152,7 @@ class Orchestrator:
         run_seed: int,
         run_id: str,
     ) -> Dict[str, Any]:
-        engine_info = self.engine.info()
+        engine_info = self._engine_info()
         return {
             "experiment_id": self.cfg.experiment_id,
             "experiment_version": self.cfg.experiment_version,
@@ -143,6 +170,7 @@ class Orchestrator:
             "supporting_titles": list(question["supporting_titles"]),
             "private_evidence_alice": question["evidence_alice"],
             "private_evidence_bob": question["evidence_bob"],
+            "all_candidate_evidence": question.get("evidence_all", ""),
             "alice_private_context": question["evidence_alice"],
             "bob_private_context": question["evidence_bob"],
             "dataset_metadata": dict(question.get("hotpotqa_metadata", {})),
@@ -164,6 +192,7 @@ class Orchestrator:
             "config": self.cfg.to_dict(),
             "environment": dict(self.environment_info),
             "engine_info": engine_info,
+            "engine_info_by_agent": dict(engine_info.get("by_agent", {})),
             "events": [],
         }
 
@@ -182,7 +211,7 @@ class Orchestrator:
         reader = Agent(
             "celab",
             self.prompts.render("centralized_system"),
-            self.engine,
+            self._engine_for("celab"),
             run_seed,
         )
         task = self.prompts.render(
@@ -190,6 +219,11 @@ class Orchestrator:
             question=question["question"],
             evidence_alice=question["evidence_alice"],
             evidence_bob=question["evidence_bob"],
+            evidence_all=question.get("evidence_all", "") or (
+                question["evidence_alice"]
+                + "\n\n---\n\n"
+                + question["evidence_bob"]
+            ),
         )
         task_message = Message(
             message_id=reader.next_message_id(),

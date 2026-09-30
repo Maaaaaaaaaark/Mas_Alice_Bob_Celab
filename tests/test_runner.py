@@ -9,7 +9,7 @@ import pytest
 
 from hotpot_mas.config import GenerationParams
 from hotpot_mas.model_engine import MockEngine
-from hotpot_mas.runner import run_experiment
+from hotpot_mas.runner import build_engines, run_experiment
 
 from conftest import NATURAL_SCRIPTS, SAMPLE_QUESTION
 
@@ -44,3 +44,29 @@ def test_resume_skips_only_matching_fingerprint(base_config, prompts, tmp_path: 
             changed, [dict(SAMPLE_QUESTION)], MockEngine(), {}, prompts,
             runs_path, skip_report=True,
         )
+
+
+def test_build_engines_constructs_three_distinct_devices(
+    base_config, monkeypatch
+):
+    cfg = replace(
+        base_config,
+        model_instance_mode="independent",
+        agent_devices={
+            "alice": "cuda:0",
+            "bob": "cuda:1",
+            "celab": "cuda:2",
+        },
+    )
+    created = []
+
+    def fake_build_engine(_cfg, device=None):
+        instance = object()
+        created.append((device, instance))
+        return instance
+
+    monkeypatch.setattr("hotpot_mas.runner.build_engine", fake_build_engine)
+    engines = build_engines(cfg)
+    assert list(engines) == ["alice", "bob", "celab"]
+    assert [device for device, _ in created] == ["cuda:0", "cuda:1", "cuda:2"]
+    assert len({id(engine) for engine in engines.values()}) == 3

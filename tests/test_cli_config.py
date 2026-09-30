@@ -141,6 +141,43 @@ def test_one_shot_requires_worker_question_visibility(base_config):
         base_config.validate()
 
 
+def test_distractor_experiment_configs_are_paired_and_auditable():
+    mas = ExperimentConfig.from_yaml(
+        "configs/one_shot_direct_answer_distractor.yaml"
+    )
+    single = ExperimentConfig.from_yaml(
+        "configs/single_agent_distractor.yaml"
+    )
+    assert mas.evidence_partition == single.evidence_partition == (
+        "balanced_distractor"
+    )
+    assert mas.partition_seed == single.partition_seed == 0
+    assert mas.manifest_path == single.manifest_path
+    assert mas.run_seeds == single.run_seeds
+    assert mas.generation.to_dict() == single.generation.to_dict()
+    assert mas.model_instance_mode == "independent"
+    assert mas.agent_devices == {
+        "alice": "cuda:0",
+        "bob": "cuda:1",
+        "celab": "cuda:2",
+    }
+    assert single.model_instance_mode == "shared"
+    assert single.architecture == "centralized_reader"
+    assert mas.modes["full"].num_questions == 7405
+    assert single.modes["full"].num_questions == 7405
+
+
+def test_independent_instances_require_three_distinct_agent_devices(base_config):
+    base_config.model_instance_mode = "independent"
+    base_config.agent_devices = {
+        "alice": "cuda:0",
+        "bob": "cuda:0",
+        "celab": "cuda:2",
+    }
+    with pytest.raises(ValueError, match="three distinct"):
+        base_config.validate()
+
+
 def test_diagnose_cli_accepts_all_five_run_files():
     args = _build_parser().parse_args(
         [

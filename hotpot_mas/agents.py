@@ -1,8 +1,9 @@
 """The three logical agents (spec sec. 6).
 
-Alice and Bob each hold one private evidence document; Celab holds the
-question. All three are independent objects with fully separate histories;
-they share only the frozen engine. A message that crosses a link is stored
+Alice and Bob each hold private evidence; C holds the question. All three are
+independent objects with fully separate histories. Depending on the versioned
+experiment config, they either share one frozen engine or use three separately
+loaded frozen engines. A message that crosses a link is stored
 in both sender and receiver histories (relaying through Celab, spec sec. 3),
 and chat-template roles are derived per viewer, so a shared ``Message``
 object never leaks any other agent state.
@@ -75,7 +76,7 @@ class Agent:
         return messages
 
     def generate(self) -> Any:
-        """Call the shared engine with this agent's current visible input."""
+        """Call this agent's assigned engine with its current visible input."""
         call_index = next(self._generation_calls)
         generation_seed = derive_generation_seed(
             self.run_seed, self.name, call_index
@@ -93,13 +94,21 @@ def make_agents(
     evidence_bob: str,
     question: str = "",
 ) -> Dict[str, Agent]:
-    """Create the three independent agents for one run."""
+    """Create agents with either one shared engine or per-agent engines."""
+    if isinstance(engine, dict):
+        required = {"alice", "bob", "celab"}
+        missing = required - set(engine)
+        if missing:
+            raise ValueError(f"missing engines for agents: {sorted(missing)}")
+        engines = engine
+    else:
+        engines = {name: engine for name in ("alice", "bob", "celab")}
     alice = Agent(
         "alice",
         prompts.render(
             "alice", private_evidence=evidence_alice, question=question
         ),
-        engine,
+        engines["alice"],
         run_seed,
     )
     bob = Agent(
@@ -107,10 +116,12 @@ def make_agents(
         prompts.render(
             "bob", private_evidence=evidence_bob, question=question
         ),
-        engine,
+        engines["bob"],
         run_seed,
     )
-    celab = Agent("celab", prompts.render("celab"), engine, run_seed)
+    celab = Agent(
+        "celab", prompts.render("celab"), engines["celab"], run_seed
+    )
     return {"alice": alice, "bob": bob, "celab": celab}
 
 

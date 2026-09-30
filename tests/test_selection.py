@@ -65,6 +65,22 @@ def make_hf_row(qid: str) -> Dict[str, Any]:
     }
 
 
+def make_distractor_row(qid: str) -> Dict[str, Any]:
+    row = make_row(qid)
+    row["context"] = [
+        {"title": "Doc A", "sentences": ["Gold alpha."]},
+        {"title": "Doc B", "sentences": ["Gold beta."]},
+        *[
+            {
+                "title": f"Distractor {index}",
+                "sentences": [f"Irrelevant text {index}."],
+            }
+            for index in range(8)
+        ],
+    ]
+    return row
+
+
 class TestValidity:
     def test_valid_row_passes(self):
         assert is_valid_candidate(make_row("q1"))
@@ -145,6 +161,48 @@ class TestSelection:
             bob_titles = q.evidence_bob.split("\n", 1)[0]
             assert alice_titles != bob_titles
 
+    def test_balanced_distractor_partition_is_disjoint_hidden_and_stable(self):
+        row = make_distractor_row("q-balanced")
+        first = select_questions(
+            [row],
+            1,
+            selection_seed=0,
+            evidence_partition="balanced_distractor",
+            partition_seed=17,
+        )[0]
+        second = select_questions(
+            [row],
+            1,
+            selection_seed=999,
+            evidence_partition="balanced_distractor",
+            partition_seed=17,
+        )[0]
+
+        alice_docs = first.partition_metadata["alice_documents"]
+        bob_docs = first.partition_metadata["bob_documents"]
+        all_docs = first.partition_metadata["single_reader_documents"]
+        assert len(alice_docs) == len(bob_docs) == 5
+        assert len(all_docs) == 10
+        assert sum(doc["is_supporting"] for doc in alice_docs) == 1
+        assert sum(doc["is_supporting"] for doc in bob_docs) == 1
+        assert {doc["title"] for doc in alice_docs}.isdisjoint(
+            {doc["title"] for doc in bob_docs}
+        )
+        assert {doc["title"] for doc in alice_docs + bob_docs} == {
+            doc["title"] for doc in all_docs
+        }
+        assert first.evidence_alice == second.evidence_alice
+        assert first.evidence_bob == second.evidence_bob
+        assert first.evidence_all == second.evidence_all
+        assert "is_supporting" not in first.evidence_alice
+        assert "is_supporting" not in first.evidence_bob
+        assert "is_supporting" not in first.evidence_all
+
+    def test_balanced_distractor_rejects_non_ten_document_context(self):
+        assert not is_valid_candidate(
+            make_row("q-short"), "balanced_distractor"
+        )
+
 
 class TestManifest:
     def test_roundtrip_and_integrity(self, tmp_path: Path):
@@ -184,3 +242,19 @@ class TestManifest:
         stats = manifest["excluded_statistics"]
         assert stats.get("answer_missing_or_empty") == 1
         assert stats.get("type_not_bridge_or_comparison") == 1
+
+    def test_balanced_manifest_records_partition_policy(self, tmp_path: Path):
+        path = tmp_path / "distractor_manifest.json"
+        manifest = build_manifest(
+            [make_distractor_row("q1")],
+            1,
+            selection_seed=0,
+            manifest_path=path,
+            evidence_partition="balanced_distractor",
+            partition_seed=23,
+        )
+        assert manifest["evidence_partition"] == "balanced_distractor"
+        assert manifest["partition_seed"] == 23
+        loaded = load_manifest(path)[0]
+        assert loaded.partition_metadata["distractors_included"] is True
+        assert loaded.partition_metadata["gold_labels_exposed_to_models"] is False

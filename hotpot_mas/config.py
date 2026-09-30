@@ -25,6 +25,8 @@ _KNOWN_KEYS = {
     "max_input_length", "generation", "max_decision_steps", "prompt_dir",
     "manifest_path", "output_dir", "modes", "architecture",
     "worker_clarification", "share_question_with_workers",
+    "evidence_partition", "partition_seed", "model_instance_mode",
+    "agent_devices",
 }
 
 
@@ -91,12 +93,16 @@ class ExperimentConfig:
     runs_per_question: int = 10
     run_seeds: List[int] = field(default_factory=lambda: list(range(10)))
     sample_selection_seed: int = 0
+    evidence_partition: str = "supporting_only"
+    partition_seed: int = 0
     model_name: str = "google/gemma-3-1b-it"
     model_revision: Optional[str] = None
     tokenizer_revision: Optional[str] = None
     engine: str = "transformers"
     dtype: str = "float16"
     device: str = "cuda"
+    model_instance_mode: str = "shared"
+    agent_devices: Dict[str, str] = field(default_factory=dict)
     attn_implementation: Optional[str] = None
     vllm_gpu_memory_utilization: float = 0.80
     vllm_enforce_eager: bool = False
@@ -147,12 +153,21 @@ class ExperimentConfig:
             runs_per_question=int(raw.get("runs_per_question", 10)),
             run_seeds=[int(s) for s in raw.get("run_seeds", list(range(10)))],
             sample_selection_seed=int(raw.get("sample_selection_seed", 0)),
+            evidence_partition=raw.get(
+                "evidence_partition", "supporting_only"
+            ),
+            partition_seed=int(raw.get("partition_seed", 0)),
             model_name=raw.get("model_name", "google/gemma-3-1b-it"),
             model_revision=raw.get("model_revision"),
             tokenizer_revision=raw.get("tokenizer_revision"),
             engine=raw.get("engine", "transformers"),
             dtype=raw.get("dtype", "float16"),
             device=raw.get("device", "cuda"),
+            model_instance_mode=raw.get("model_instance_mode", "shared"),
+            agent_devices={
+                str(name): str(device)
+                for name, device in dict(raw.get("agent_devices", {})).items()
+            },
             attn_implementation=raw.get("attn_implementation"),
             vllm_gpu_memory_utilization=float(
                 raw.get("vllm_gpu_memory_utilization", 0.80)
@@ -197,6 +212,37 @@ class ExperimentConfig:
             )
         if self.engine not in {"transformers", "vllm"}:
             raise ValueError("engine must be one of: transformers, vllm")
+        if self.evidence_partition not in {
+            "supporting_only",
+            "balanced_distractor",
+        }:
+            raise ValueError(
+                "evidence_partition must be one of: supporting_only, "
+                "balanced_distractor"
+            )
+        if self.partition_seed < 0 or self.partition_seed >= 2**32:
+            raise ValueError("partition_seed must be in [0, 2**32)")
+        if self.model_instance_mode not in {"shared", "independent"}:
+            raise ValueError(
+                "model_instance_mode must be one of: shared, independent"
+            )
+        if self.model_instance_mode == "independent":
+            if self.engine != "transformers":
+                raise ValueError(
+                    "independent model instances currently require the "
+                    "transformers engine"
+                )
+            required = {"alice", "bob", "celab"}
+            if set(self.agent_devices) != required:
+                raise ValueError(
+                    "independent model instances require agent_devices for "
+                    "exactly alice, bob, and celab"
+                )
+            if len(set(self.agent_devices.values())) != 3:
+                raise ValueError(
+                    "independent model instances require three distinct "
+                    "agent_devices"
+                )
         if not 0 < self.vllm_gpu_memory_utilization < 1:
             raise ValueError(
                 "vllm_gpu_memory_utilization must be strictly between 0 and 1"
@@ -314,12 +360,16 @@ class ExperimentConfig:
             "runs_per_question": self.runs_per_question,
             "run_seeds": list(self.run_seeds),
             "sample_selection_seed": self.sample_selection_seed,
+            "evidence_partition": self.evidence_partition,
+            "partition_seed": self.partition_seed,
             "model_name": self.model_name,
             "model_revision": self.model_revision,
             "tokenizer_revision": self.tokenizer_revision,
             "engine": self.engine,
             "dtype": self.dtype,
             "device": self.device,
+            "model_instance_mode": self.model_instance_mode,
+            "agent_devices": dict(self.agent_devices),
             "attn_implementation": self.attn_implementation,
             "vllm_gpu_memory_utilization": self.vllm_gpu_memory_utilization,
             "vllm_enforce_eager": self.vllm_enforce_eager,

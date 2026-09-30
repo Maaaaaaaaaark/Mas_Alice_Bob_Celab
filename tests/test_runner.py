@@ -46,7 +46,7 @@ def test_resume_skips_only_matching_fingerprint(base_config, prompts, tmp_path: 
         )
 
 
-def test_build_engines_constructs_three_distinct_devices(
+def test_build_engines_constructs_three_distinct_instances_on_one_device(
     base_config, monkeypatch
 ):
     cfg = replace(
@@ -54,8 +54,8 @@ def test_build_engines_constructs_three_distinct_devices(
         model_instance_mode="independent",
         agent_devices={
             "alice": "cuda:0",
-            "bob": "cuda:1",
-            "celab": "cuda:2",
+            "bob": "cuda:0",
+            "celab": "cuda:0",
         },
     )
     created = []
@@ -68,5 +68,5 @@ def test_build_engines_constructs_three_distinct_devices(
     monkeypatch.setattr("hotpot_mas.runner.build_engine", fake_build_engine)
     engines = build_engines(cfg)
     assert list(engines) == ["alice", "bob", "celab"]
-    assert [device for device, _ in created] == ["cuda:0", "cuda:1", "cuda:2"]
+    assert [device for device, _ in created] == ["cuda:0", "cuda:0", "cuda:0"]
     assert len({id(engine) for engine in engines.values()}) == 3

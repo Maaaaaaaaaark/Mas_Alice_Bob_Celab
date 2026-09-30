@@ -158,8 +158,8 @@ def test_distractor_experiment_configs_are_paired_and_auditable():
     assert mas.model_instance_mode == "independent"
     assert mas.agent_devices == {
         "alice": "cuda:0",
-        "bob": "cuda:1",
-        "celab": "cuda:2",
+        "bob": "cuda:0",
+        "celab": "cuda:0",
     }
     assert single.model_instance_mode == "shared"
     assert single.architecture == "centralized_reader"
@@ -167,14 +167,20 @@ def test_distractor_experiment_configs_are_paired_and_auditable():
     assert single.modes["full"].num_questions == 7405
 
 
-def test_independent_instances_require_three_distinct_agent_devices(base_config):
+def test_independent_instances_may_share_one_device(base_config):
     base_config.model_instance_mode = "independent"
     base_config.agent_devices = {
         "alice": "cuda:0",
         "bob": "cuda:0",
-        "celab": "cuda:2",
+        "celab": "cuda:0",
     }
-    with pytest.raises(ValueError, match="three distinct"):
+    base_config.validate()
+
+
+def test_independent_instances_require_all_agent_device_keys(base_config):
+    base_config.model_instance_mode = "independent"
+    base_config.agent_devices = {"alice": "cuda:0", "bob": "cuda:0"}
+    with pytest.raises(ValueError, match="exactly alice, bob, and celab"):
         base_config.validate()
 
 
@@ -198,3 +204,35 @@ def test_diagnose_cli_accepts_all_five_run_files():
     assert args.shared_question == "shared.jsonl"
     assert args.one_shot == "one-shot.jsonl"
     assert args.output_dir.endswith("reading_vs_communication")
+
+
+def test_run_cli_accepts_question_shard_arguments():
+    args = _build_parser().parse_args(
+        [
+            "run",
+            "--config",
+            "configs/one_shot_direct_answer_distractor.yaml",
+            "--mode",
+            "full",
+            "--num-shards",
+            "4",
+            "--shard-index",
+            "2",
+        ]
+    )
+    assert args.num_shards == 4
+    assert args.shard_index == 2
+
+
+def test_merge_shards_cli_defaults_to_full_mode():
+    args = _build_parser().parse_args(
+        [
+            "merge-shards",
+            "--config",
+            "configs/single_agent_distractor.yaml",
+            "--num-shards",
+            "4",
+        ]
+    )
+    assert args.mode == "full"
+    assert args.num_shards == 4

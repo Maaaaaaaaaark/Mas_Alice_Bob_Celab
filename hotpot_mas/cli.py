@@ -5,6 +5,7 @@ Subcommands:
 - ``prepare-questions``: download HotpotQA validation and write the fixed
   question manifest (needs network + ``datasets``);
 - ``run``: execute trajectories (needs a GPU + the gated model);
+- ``merge-shards``: validate and merge completed run shards;
 - ``report``: (re)generate summaries/report.md from an existing runs.jsonl.
 
 Usage: ``python -m hotpot_mas.cli <subcommand> [options]``
@@ -68,7 +69,23 @@ def _cmd_run(args: argparse.Namespace) -> None:
     cfg = _load_config(args)
     from .runner import run_from_config
 
-    run_from_config(cfg)
+    run_from_config(
+        cfg,
+        num_shards=args.num_shards,
+        shard_index=args.shard_index,
+    )
+
+
+def _cmd_merge_shards(args: argparse.Namespace) -> None:
+    cfg = _load_config(args)
+    from .sharding import merge_shard_outputs
+
+    summary = merge_shard_outputs(cfg, num_shards=args.num_shards)
+    print("shards validated and merged:")
+    print(f"  runs: {summary['merged_runs']}/{summary['expected_runs']}")
+    print(f"  merged_runs: {summary['merged_runs_path']}")
+    print(f"  merge_summary: {summary['merge_summary_path']}")
+    print(f"  report: {summary['report_paths']['report']}")
 
 
 def _cmd_report(args: argparse.Namespace) -> None:
@@ -153,7 +170,32 @@ def _build_parser() -> argparse.ArgumentParser:
         "--seeds", dest="run_seeds",
         help="comma-separated run seed list (0,1,2)"
     )
+    run.add_argument(
+        "--num-shards", type=int, default=1,
+        help="deterministically split questions across this many shards",
+    )
+    run.add_argument(
+        "--shard-index", type=int, default=0,
+        help="zero-based question shard index",
+    )
     run.set_defaults(func=_cmd_run)
+
+    merge = subparsers.add_parser(
+        "merge-shards",
+        help="validate complete shard JSONL files and build one report",
+    )
+    add_config(merge)
+    merge.add_argument(
+        "--mode",
+        choices=["smoke", "small", "pilot", "benchmark", "full"],
+        default="full",
+        help="run mode whose shards are being merged",
+    )
+    merge.add_argument(
+        "--num-shards", type=int, required=True,
+        help="number of shards used by the run jobs",
+    )
+    merge.set_defaults(func=_cmd_merge_shards)
 
     rep = subparsers.add_parser(
         "report", help="(re)generate summaries and report.md from runs.jsonl"

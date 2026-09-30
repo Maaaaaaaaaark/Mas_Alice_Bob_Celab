@@ -331,8 +331,9 @@ run's `engine_info`.
 `configs/one_shot_direct_answer_distractor.yaml` preserves the V10 fixed
 Alice-once, Bob-once, C-once schedule. Each worker receives five unlabelled
 candidate documents: one supporting document and four distractors. The three
-agents use separately loaded frozen Gemma-3-1B instances on logical CUDA
-devices 0, 1, and 2.
+agents use separately loaded frozen Gemma-3-1B model objects. The Violet
+configuration places the three independent instances on one logical CUDA
+device so that separate question shards can run in parallel.
 
 `configs/single_agent_distractor.yaml` is the paired single-reader control. It
 receives the same question and the union of all ten unlabelled documents in a
@@ -346,11 +347,11 @@ HF_HOME=/data/yuheng/cache python -m hotpot_mas.cli prepare-questions \
   --config configs/one_shot_direct_answer_distractor.yaml
 ```
 
-Before a full run, use smoke mode. Exposing physical GPUs 1, 2, and 3 makes
-them logical `cuda:0`, `cuda:1`, and `cuda:2` inside the process:
+Before a full run, use smoke mode. The three MAS model objects are loaded
+separately on the one GPU exposed as logical `cuda:0`:
 
 ```bash
-CUDA_VISIBLE_DEVICES=1,2,3 HF_HOME=/data/yuheng/cache \
+CUDA_VISIBLE_DEVICES=1 HF_HOME=/data/yuheng/cache \
 python -m hotpot_mas.cli run \
   --config configs/one_shot_direct_answer_distractor.yaml --mode smoke
 
@@ -364,3 +365,7 @@ Use `--mode benchmark` for the previous 100-question × 10-seed scale and
 order depend only on `partition_seed` and question ID, never on the generation
 seed. Gold/distractor labels are logged in the manifest for auditing but are
 not included in model prompts.
+
+For the Violet Slurm cluster, use the environment-activated job arrays and
+safe shard-merging workflow in [`VIOLET_CLUSTER.md`](VIOLET_CLUSTER.md). This
+does not revert to a shared model object: A, B, and C are loaded separately.

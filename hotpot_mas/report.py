@@ -83,6 +83,10 @@ def _run_level_stats(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
     model_instance_mode = first.get("config", {}).get(
         "model_instance_mode", "shared"
     )
+    physical_model_instances = first.get("engine_info", {}).get(
+        "physical_model_instances",
+        1,
+    )
     clarification_requests = sum(
         int(r.get("num_clarification_requests", 0)) for r in runs
     )
@@ -97,6 +101,8 @@ def _run_level_stats(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
         "evidence_partition": evidence_partition,
         "partition_seed": first.get("config", {}).get("partition_seed", 0),
         "model_instance_mode": model_instance_mode,
+        "physical_model_instances": physical_model_instances,
+        "agent_devices": first.get("config", {}).get("agent_devices", {}),
         "num_runs": len(runs),
         "f1": _mean_std([r["f1"] for r in runs]),
         "em": _mean_std([r["em"] for r in runs]),
@@ -270,8 +276,13 @@ def _markdown_report(
     r = run_level
     rates = r["rates"]
     centralized = r["architecture"] == "centralized_reader"
-    if centralized:
+    distractor = r["evidence_partition"] == "balanced_distractor"
+    if centralized and distractor:
+        title = "# HotpotQA Single-Agent Distractor Control — Report"
+    elif centralized:
         title = "# HotpotQA Centralized Reader Diagnostic — Report"
+    elif r["architecture"] == "one_shot_direct_answer" and distractor:
+        title = "# HotpotQA One-Shot Direct-Answer MAS with Distractors — Report"
     elif r["architecture"] == "one_shot_gather":
         title = "# HotpotQA One-Shot Gather MAS Control — Report"
     elif r["architecture"] == "one_shot_direct_answer":
@@ -290,6 +301,8 @@ def _markdown_report(
         f"architecture: `{r['architecture']}`",
         f"evidence partition: `{r['evidence_partition']}`",
         f"model instances: `{r['model_instance_mode']}`",
+        f"physical model objects per process: {r['physical_model_instances']}",
+        f"agent devices: `{r['agent_devices']}`",
         "",
         "## Answer quality",
         "",

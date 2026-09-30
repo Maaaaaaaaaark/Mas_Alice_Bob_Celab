@@ -238,11 +238,6 @@ class ExperimentConfig:
                     "independent model instances require agent_devices for "
                     "exactly alice, bob, and celab"
                 )
-            if len(set(self.agent_devices.values())) != 3:
-                raise ValueError(
-                    "independent model instances require three distinct "
-                    "agent_devices"
-                )
         if not 0 < self.vllm_gpu_memory_utilization < 1:
             raise ValueError(
                 "vllm_gpu_memory_utilization must be strictly between 0 and 1"

@@ -26,8 +26,8 @@ device: cuda:0
 model_instance_mode: independent
 agent_devices:
   alice: cuda:0
-  bob: cuda:1
-  celab: cuda:2
+  bob: cuda:0
+  celab: cuda:0
 attn_implementation: null
 max_input_length: 30000
 generation:

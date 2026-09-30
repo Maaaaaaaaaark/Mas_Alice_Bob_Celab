@@ -12,9 +12,8 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from tqdm import tqdm
 
@@ -28,8 +27,12 @@ from .prompts import (
     ONE_SHOT_PROMPT_NAMES,
     PromptSet,
 )
-from .question_selection import load_manifest
 from .report import write_report
+from .sharding import (
+    load_questions_for_config,
+    select_question_shard,
+    shard_output_dir,
+)
 
 
 def run_fingerprint(
@@ -149,6 +152,7 @@ def run_experiment(
     prompts: PromptSet,
     runs_path: Path,
     skip_report: bool = False,
+    shard_metadata: Optional[Dict[str, int]] = None,
 ) -> List[Dict[str, Any]]:
     """Run all (question, seed) pairs, appending each record to runs_path."""
     orchestrator = Orchestrator(cfg, prompts, engine, environment_info)
@@ -210,6 +214,8 @@ def run_experiment(
                 question, run_index, run_seed, run_id
             )
             record["run_fingerprint"] = fingerprint
+            if shard_metadata is not None:
+                record["shard"] = dict(shard_metadata)
             writer.append(record)
             completed.append(record)
             elapsed = time.time() - started
@@ -231,25 +237,26 @@ def run_experiment(
     return completed
 
 
-def run_from_config(cfg: ExperimentConfig) -> None:
+def run_from_config(
+    cfg: ExperimentConfig,
+    num_shards: int = 1,
+    shard_index: int = 0,
+) -> None:
     """Load everything and run the experiment end to end."""
     tqdm.write(f"loading manifest: {cfg.manifest_path}")
-    questions = []
-    for selected in load_manifest(cfg.manifest_path):
-        question = asdict(selected)
-        # The field was added for distractor controls. Omitting its empty
-        # legacy default preserves old shared-engine run fingerprints.
-        if not question.get("evidence_all"):
-            question.pop("evidence_all", None)
-        questions.append(question)
-    if cfg.num_questions and len(questions) > cfg.num_questions:
-        questions = questions[: cfg.num_questions]
-    if len(questions) < cfg.num_questions:
+    all_questions = load_questions_for_config(cfg)
+    questions = select_question_shard(
+        all_questions, num_shards, shard_index
+    )
+    if not questions:
         raise RuntimeError(
-            f"manifest has {len(questions)} questions but config requires "
-            f"{cfg.num_questions}"
+            f"shard {shard_index}/{num_shards} contains no questions; "
+            "use fewer shards"
         )
-    tqdm.write(f"selected {len(questions)} questions from manifest")
+    tqdm.write(
+        f"selected shard {shard_index}/{num_shards}: {len(questions)} of "
+        f"{len(all_questions)} configured questions"
+    )
 
     if cfg.architecture == "centralized_reader":
         prompt_names = CENTRALIZED_PROMPT_NAMES
@@ -266,5 +273,23 @@ def run_from_config(cfg: ExperimentConfig) -> None:
     tqdm.write("environment collected")
     engine = build_engines(cfg)
 
-    runs_path = cfg.output_subdir() / "runs.jsonl"
-    run_experiment(cfg, questions, engine, environment_info, prompts, runs_path)
+    if num_shards == 1:
+        runs_path = cfg.output_subdir() / "runs.jsonl"
+        shard_metadata = None
+    else:
+        runs_path = shard_output_dir(
+            cfg, num_shards, shard_index
+        ) / "runs.jsonl"
+        shard_metadata = {
+            "num_shards": num_shards,
+            "shard_index": shard_index,
+        }
+    run_experiment(
+        cfg,
+        questions,
+        engine,
+        environment_info,
+        prompts,
+        runs_path,
+        shard_metadata=shard_metadata,
+    )

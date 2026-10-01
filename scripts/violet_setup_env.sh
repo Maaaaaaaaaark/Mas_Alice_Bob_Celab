@@ -3,7 +3,8 @@ set -euo pipefail
 
 MAS_HOME=/common/home/users/y/yh.liang.2026
 MAS_SCRATCH=/common/scratch/users/y/yh.liang.2026
-REPO_DIR="$MAS_HOME/projects/Mas_Alice_Bob_Celab"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 ENV_DIR="$MAS_HOME/conda_envs/hotpot_mas"
 
 module purge

@@ -163,8 +163,8 @@ def test_distractor_experiment_configs_are_paired_and_auditable():
     }
     assert single.model_instance_mode == "shared"
     assert single.architecture == "centralized_reader"
-    assert mas.modes["full"].num_questions == 7405
-    assert single.modes["full"].num_questions == 7405
+    assert mas.modes["full"].num_questions == 7345
+    assert single.modes["full"].num_questions == 7345
 
 
 def test_independent_instances_may_share_one_device(base_config):

@@ -340,7 +340,10 @@ receives the same question and the union of all ten unlabelled documents in a
 separate deterministic order. Both conditions use the same partition manifest,
 question order, run seeds, checkpoint, and decoding settings.
 
-Build the full 7,405-question distractor manifest once:
+Build the full 7,345-question eligible distractor manifest once. Sixty rows in
+the 7,405-row validation split do not satisfy the fixed experimental structure
+(exactly two distinct gold documents plus eight valid distractors), so they are
+excluded transparently and counted by reason in the manifest:
 
 ```bash
 HF_HOME=/data/yuheng/cache python -m hotpot_mas.cli prepare-questions \
@@ -361,7 +364,7 @@ python -m hotpot_mas.cli run \
 ```
 
 Use `--mode benchmark` for the previous 100-question × 10-seed scale and
-`--mode full` for 7,405 questions × 10 seeds. Partition assignment and document
+`--mode full` for 7,345 eligible questions × 10 seeds. Partition assignment and document
 order depend only on `partition_seed` and question ID, never on the generation
 seed. Gold/distractor labels are logged in the manifest for auditing but are
 not included in model prompts.
@@ -369,3 +372,20 @@ not included in model prompts.
 For the Violet Slurm cluster, use the environment-activated job arrays and
 safe shard-merging workflow in [`VIOLET_CLUSTER.md`](VIOLET_CLUSTER.md). This
 does not revert to a shared model object: A, B, and C are loaded separately.
+
+Analyze every one-shot MAS conversation with a streaming, English failure-
+attribution report:
+
+```bash
+python -m hotpot_mas.cli analyze-failures \
+  --runs outputs/hotpotqa_base_mas/v11_one_shot_direct_answer_distractor/runs.jsonl \
+  --output-dir outputs/hotpotqa_diagnostics/v11_failure_attribution
+```
+
+The analysis traces the normalized gold string through private evidence,
+Alice/Bob reports, and C's answer. It partitions non-EM runs into execution or
+protocol failure, over-complete final answer, synthesis/selection failure,
+worker extraction failure, and cases where the gold string is not lexically
+explicit in the evidence. These are observational lexical heuristics, not a
+unique causal decomposition; the generated report states the limitations and
+retains sample run IDs for manual review.

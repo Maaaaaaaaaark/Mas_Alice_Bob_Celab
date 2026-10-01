@@ -20,6 +20,7 @@ from typing import List, Optional
 
 from .config import ExperimentConfig
 from .diagnostics import write_diagnostic_report
+from .failure_analysis import write_failure_attribution_report
 from .question_selection import build_manifest
 from .report import write_report
 
@@ -118,6 +119,25 @@ def _cmd_diagnose(args: argparse.Namespace) -> None:
         one_shot_path=(resolve(args.one_shot) if args.one_shot else None),
     )
     print("diagnostic files written:")
+    for name, path in paths.items():
+        print(f"  {name}: {path}")
+
+
+def _cmd_analyze_failures(args: argparse.Namespace) -> None:
+    from .config import REPO_ROOT
+
+    runs_path = Path(args.runs)
+    if not runs_path.is_absolute():
+        runs_path = REPO_ROOT / runs_path
+    output_dir = Path(args.output_dir)
+    if not output_dir.is_absolute():
+        output_dir = REPO_ROOT / output_dir
+    paths = write_failure_attribution_report(
+        runs_path,
+        output_dir,
+        samples_per_category=args.samples_per_category,
+    )
+    print("failure-attribution files written:")
     for name, path in paths.items():
         print(f"  {name}: {path}")
 
@@ -226,6 +246,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="directory for the English diagnostic report and JSON summary",
     )
     diagnose.set_defaults(func=_cmd_diagnose)
+
+    failures = subparsers.add_parser(
+        "analyze-failures",
+        help="attribute one-shot MAS failures across evidence, reports, and C",
+    )
+    failures.add_argument("--runs", required=True, help="MAS runs.jsonl path")
+    failures.add_argument(
+        "--output-dir",
+        required=True,
+        help="directory for the English Markdown report and JSON summary",
+    )
+    failures.add_argument(
+        "--samples-per-category",
+        type=int,
+        default=5,
+        help="number of example run IDs retained for each category",
+    )
+    failures.set_defaults(func=_cmd_analyze_failures)
     return parser
 
 

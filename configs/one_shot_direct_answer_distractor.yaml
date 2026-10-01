@@ -10,7 +10,7 @@ share_question_with_workers: true
 dataset: hotpot_qa
 dataset_config: distractor
 dataset_split: validation
-num_questions: 7405
+num_questions: 7345
 runs_per_question: 10
 run_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 sample_selection_seed: 0
@@ -49,4 +49,4 @@ modes:
   small: {num_questions: 5, runs_per_question: 2, run_seeds: [0, 1]}
   pilot: {num_questions: 20, runs_per_question: 2, run_seeds: [0, 1]}
   benchmark: {num_questions: 100, runs_per_question: 10, run_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]}
-  full: {num_questions: 7405, runs_per_question: 10, run_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]}
+  full: {num_questions: 7345, runs_per_question: 10, run_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]}

@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=hotpot-single-full
-#SBATCH --partition=pradeepresearch
+#SBATCH --partition=researchlong
 #SBATCH --account=pradeepresearch
-#SBATCH --qos=pradeepresearch-priority
+#SBATCH --qos=research-1-qos
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
@@ -17,7 +17,7 @@ set -euo pipefail
 
 MAS_HOME=/common/home/users/y/yh.liang.2026
 MAS_SCRATCH=/common/scratch/users/y/yh.liang.2026
-REPO_DIR="$MAS_HOME/projects/Mas_Alice_Bob_Celab"
+REPO_DIR="${SLURM_SUBMIT_DIR:?Submit this job from the repository root}"
 ENV_DIR="$MAS_HOME/conda_envs/hotpot_mas"
 NUM_SHARDS=4
 

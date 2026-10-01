@@ -326,7 +326,8 @@ def build_manifest(
     )
     if len(selected) < num_questions:
         raise RuntimeError(
-            f"only {len(selected)} valid candidates found, need {num_questions}"
+            f"only {len(selected)} valid candidates found, need {num_questions}; "
+            f"excluded_statistics={json.dumps(rejected_counts, sort_keys=True)}"
         )
 
     questions_payload = {

@@ -14,7 +14,9 @@ set -euo pipefail
 
 MAS_HOME=/common/home/users/y/yh.liang.2026
 MAS_SCRATCH=/common/scratch/users/y/yh.liang.2026
-REPO_DIR="$MAS_HOME/projects/Mas_Alice_Bob_Celab"
+# Slurm exports the directory from which sbatch was invoked. Using it avoids
+# hard-coding a case-sensitive cluster path such as Project/ versus projects/.
+REPO_DIR="${SLURM_SUBMIT_DIR:?Submit this job from the repository root}"
 ENV_DIR="$MAS_HOME/conda_envs/hotpot_mas"
 
 module purge

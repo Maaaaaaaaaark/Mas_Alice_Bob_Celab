@@ -7,8 +7,8 @@ used only for Git, environment setup, authentication, and job submission.
 ## 1. Clone or update the repository
 
 ```bash
-mkdir -p /common/home/users/y/yh.liang.2026/projects
-cd /common/home/users/y/yh.liang.2026/projects
+mkdir -p /common/home/users/y/yh.liang.2026/Project
+cd /common/home/users/y/yh.liang.2026/Project
 git clone https://github.com/Maaaaaaaaaark/Mas_Alice_Bob_Celab.git
 cd Mas_Alice_Bob_Celab
 ```
@@ -16,7 +16,7 @@ cd Mas_Alice_Bob_Celab
 For an existing clone:
 
 ```bash
-cd /common/home/users/y/yh.liang.2026/projects/Mas_Alice_Bob_Celab
+cd /common/home/users/y/yh.liang.2026/Project/Mas_Alice_Bob_Celab
 git pull --ff-only origin main
 ```
 
@@ -53,9 +53,13 @@ missing parent directory for `--output`.
 
 ```bash
 mkdir -p /common/home/users/y/yh.liang.2026/slurm_logs
-cd /common/home/users/y/yh.liang.2026/projects/Mas_Alice_Bob_Celab
+cd /common/home/users/y/yh.liang.2026/Project/Mas_Alice_Bob_Celab
 sbatch scripts/violet_prepare_manifest.sbatch
 ```
+
+The Slurm scripts use `SLURM_SUBMIT_DIR`, so submit them from the repository
+root. They do not depend on the repository being stored under a particular
+case-sensitive directory name.
 
 After completion, verify the manifest:
 
@@ -77,7 +81,9 @@ print("sha256:", manifest["questions_sha256"])
 PY
 ```
 
-Expected: 7,405 questions, `balanced_distractor`, partition seed 0.
+Expected: 7,345 selected questions from 7,405 validation rows,
+`balanced_distractor`, partition seed 0. The manifest records why the 60 rows
+that cannot satisfy the fixed two-gold/eight-distractor topology were excluded.
 
 ## 4. Run both smoke tests
 
@@ -118,8 +124,8 @@ echo "Single-reader array: $SINGLE_JOB"
 The two arrays may be submitted together. Violet will run only as many tasks as
 the available A5000 resources permit.
 
-Expected shard sizes for 7,405 questions and ten seeds are 18,520, 18,510,
-18,510, and 18,510 runs. Inspect progress with:
+Expected shard sizes for 7,345 questions and ten seeds are 18,370, 18,360,
+18,360, and 18,360 runs. Inspect progress with:
 
 ```bash
 wc -l outputs/hotpotqa_base_mas/v11_one_shot_direct_answer_distractor/shards/*/runs.jsonl
@@ -150,19 +156,20 @@ outputs/hotpotqa_base_mas/v11_one_shot_direct_answer_distractor/report.md
 outputs/hotpotqa_single_agent_distractor/v1/report.md
 ```
 
-Each condition must contain exactly 74,050 merged runs. Detailed merge audits
+Each condition must contain exactly 73,450 merged runs. Detailed merge audits
 are written to `merge_summary.json` beside each report.
 
-## 7. Priority-partition fallback
+## 7. Partition choice
 
-If `sbatch` rejects `pradeepresearch` despite `myinfo` and `sinfo` showing it,
-change the GPU scripts to:
+Although `myinfo` may list `pradeepresearch`, the scheduler can still reject
+the user's group on that partition. The supplied smoke scripts therefore use
+`researchshort`, and the full GPU arrays use:
 
 ```bash
 #SBATCH --partition=researchlong
 #SBATCH --qos=research-1-qos
 ```
 
-Keep `--account=pradeepresearch`, `--requeue`, and the A5000 constraint. Do not
-change partition or GPU type in the middle of an experiment without recording
-the change as a new experiment version.
+Both use `research-1-qos`. Keep `--account=pradeepresearch`, `--requeue`, and
+the A5000 constraint. Do not change partition or GPU type in the middle of an
+experiment without recording the change as a new experiment version.

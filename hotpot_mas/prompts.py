@@ -23,6 +23,10 @@ PROMPT_FILES = {
     "centralized_system": "centralized_system.txt",
     "centralized_task": "centralized_task.txt",
     "worker_task": "worker_task.txt",
+    # Training-experiment prompt files (prompts_training/ directory).
+    "worker_a_system": "worker_a_system.txt",
+    "worker_b_system": "worker_b_system.txt",
+    "synthesizer_system": "synthesizer_system.txt",
 }
 
 MAS_PROMPT_NAMES = ("alice", "bob", "celab", "forced_final")

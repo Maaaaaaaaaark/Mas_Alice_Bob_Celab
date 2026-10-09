@@ -1,0 +1,159 @@
+# Stage 1: cross-paired GRPO training of the shared worker LoRA
+# (cross_paired_grpo.tex, Algorithm 1). Frozen C = base model, greedy
+# decoding, deterministic reward (official HotpotQA token F1).
+#
+# Run modes (deep-merged over this base):
+#   trace  single question, G=2, N=1, 1 update, 2 policy epochs,
+#          everything recorded to trace.json + worked_example.md
+#   smoke  tiny real run: forward + reward + backward + checkpoint
+#   pilot  small run to observe the learning curve
+#   full   production-scale run (do NOT launch during development)
+#
+# The base block below is the smoke configuration; each mode overrides
+# its own data counts, hyperparameters, and experiment/manifest identity.
+
+experiment_id: cross_paired_grpo_workers
+experiment_version: smoke
+seed: 0
+output_dir: outputs/training
+manifest_dir: outputs/training_manifests/smoke
+prompt_dir: prompts_training
+
+data:
+  dataset: hotpot_qa
+  dataset_config: distractor
+  train:
+    split: train                 # official HotpotQA train split
+    num_questions: 64
+    selection_seed: 0
+  val:
+    split: validation
+    num_questions: 32
+    selection_seed: 1
+  test:
+    split: validation            # official test has no public gold answers
+    num_questions: 32
+    selection_seed: 2
+  partition_seed: 0              # oracle-balanced partition shuffle seed
+  val_test_split_seed: 0         # provenance seed of the val/test boundary
+
+model:
+  name: google/gemma-3-1b-it
+  revision: null
+  dtype: float16
+  device: cuda
+  attn_implementation: null
+  max_input_length: 30000
+  peft:
+    r: 16
+    alpha: 32
+    dropout: 0.0
+    target_modules: null         # null -> peft "all-linear"
+
+workers:
+  G: 2                           # reports sampled per worker per question
+  delta: 0.05                    # signal threshold std(Q_side) > delta
+  eps_n: 1.0e-6                  # advantage normalization epsilon
+  clip_epsilon: 0.2              # PPO clip range
+  num_policy_epochs: 1           # 1 = exactly the TeX single-update algorithm
+  minibatch_size: 4              # questions per gradient-accumulation chunk
+  max_sampling_attempts: 20      # guard against endless no-signal loops
+  learning_rate: 1.0e-4
+  weight_decay: 0.0
+  questions_per_update: 2        # N: signal questions per update
+  steps: 2                       # T: number of updates
+  eval_interval: 1               # K: validation evaluation frequency
+  final_test_eval: false
+  fail_on_insufficient_signal: false
+  rollout:
+    do_sample: true
+    temperature: 0.6
+    top_p: 0.95
+    max_new_tokens: 256
+  eval_decode:
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0
+    max_new_tokens: 256
+  synthesizer_decode:
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0
+    max_new_tokens: 64
+
+modes:
+  trace:
+    experiment_version: trace
+    manifest_dir: outputs/training_manifests/trace
+    seed: 0
+    data:
+      train:
+        split: validation       # 1 question from validation avoids a
+        num_questions: 1        # full official-train download for a trace
+        selection_seed: 0
+      val:
+        split: validation
+        num_questions: 1
+        selection_seed: 1
+      test:
+        split: validation
+        num_questions: 1
+        selection_seed: 2
+    workers:
+      G: 2
+      num_policy_epochs: 2      # >1 so clipping is observable in the trace
+      questions_per_update: 1
+      steps: 1
+      eval_interval: 1
+      max_sampling_attempts: 30
+      minibatch_size: 1
+      final_test_eval: false
+  smoke:
+    experiment_version: smoke
+    manifest_dir: outputs/training_manifests/smoke
+  pilot:
+    experiment_version: pilot
+    manifest_dir: outputs/training_manifests/pilot
+    data:
+      train:
+        split: train
+        num_questions: 500
+        selection_seed: 0
+      val:
+        num_questions: 64
+        selection_seed: 1
+      test:
+        num_questions: 64
+        selection_seed: 2
+    workers:
+      G: 4
+      questions_per_update: 8
+      steps: 25
+      eval_interval: 5
+      num_policy_epochs: 2
+      minibatch_size: 8
+      max_sampling_attempts: 300
+      final_test_eval: true
+  full:
+    experiment_version: full
+    manifest_dir: outputs/training_manifests/full
+    data:
+      train:
+        split: train
+        num_questions: 2000
+        selection_seed: 0
+      val:
+        num_questions: 200
+        selection_seed: 1
+      test:
+        num_questions: 200
+        selection_seed: 2
+    workers:
+      G: 4
+      questions_per_update: 16
+      steps: 200
+      eval_interval: 20
+      num_policy_epochs: 2
+      minibatch_size: 16
+      max_sampling_attempts: 1000
+      final_test_eval: true

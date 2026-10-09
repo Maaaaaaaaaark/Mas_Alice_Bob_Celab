@@ -77,6 +77,41 @@ def exact_match_score(prediction: str, ground_truth: str) -> float:
     return float(normalize_answer(prediction) == normalize_answer(ground_truth))
 
 
+def token_overlap_scores(
+    prediction: str, ground_truth: str
+) -> Tuple[float, float, float]:
+    """Return (precision, recall, f1) for one prediction/gold pair.
+
+    Same normalization, token overlap, and yes/no/noanswer guard as the
+    official evaluator, but exposes the precision and recall components so
+    training traces can record them alongside the F1 reward.
+    """
+    normalized_prediction = normalize_answer(prediction)
+    normalized_ground_truth = normalize_answer(ground_truth)
+
+    if (
+        normalized_prediction in ["yes", "no", "noanswer"]
+        and normalized_prediction != normalized_ground_truth
+    ):
+        return 0.0, 0.0, 0.0
+    if (
+        normalized_ground_truth in ["yes", "no", "noanswer"]
+        and normalized_prediction != normalized_ground_truth
+    ):
+        return 0.0, 0.0, 0.0
+
+    prediction_tokens = normalized_prediction.split()
+    ground_truth_tokens = normalized_ground_truth.split()
+    common = Counter(prediction_tokens) & Counter(ground_truth_tokens)
+    num_same = sum(common.values())
+    if num_same == 0:
+        return 0.0, 0.0, 0.0
+    precision = 1.0 * num_same / len(prediction_tokens)
+    recall = 1.0 * num_same / len(ground_truth_tokens)
+    f1 = (2 * precision * recall) / (precision + recall)
+    return precision, recall, f1
+
+
 def evaluate_answer(
     prediction: Union[str, None], gold: Union[str, List[str]]
 ) -> Tuple[float, float]:

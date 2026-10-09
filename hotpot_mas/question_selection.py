@@ -34,7 +34,7 @@ import json
 import random
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from .hotpotqa import (
     row_context_documents,
@@ -57,6 +57,11 @@ class SelectedQuestion:
     hotpotqa_metadata: Dict[str, Any] = field(default_factory=dict)
     partition_metadata: Dict[str, Any] = field(default_factory=dict)
     evidence_all: str = ""
+    # Full ten-document pool in the ORIGINAL context order (pre-partition),
+    # each entry {"title", "paragraph", "is_supporting"}. Populated only by
+    # the ``balanced_distractor`` partition (training experiments); gold
+    # labels live here for audit/trace and never enter rendered evidence.
+    document_pool: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def _format_evidence(title: str, paragraph: str) -> str:
@@ -69,6 +74,12 @@ def _format_documents(documents: List[Dict[str, Any]]) -> str:
         _format_evidence(str(doc["title"]), str(doc["paragraph"]))
         for doc in documents
     )
+
+
+def _row_id(row: Dict[str, Any]) -> Optional[str]:
+    """Best-effort stable row id for cross-split exclusion (None if absent)."""
+    raw = row.get("id", row.get("_id"))
+    return str(raw) if raw is not None else None
 
 
 def _stable_rng(partition_seed: int, question_id: str, namespace: str) -> random.Random:
@@ -180,8 +191,13 @@ def select_questions(
     selection_seed: int,
     evidence_partition: str = "supporting_only",
     partition_seed: int = 0,
+    exclude_ids: Optional[Set[str]] = None,
 ) -> List[SelectedQuestion]:
-    """Select ``num_questions`` valid candidates after a seeded shuffle."""
+    """Select ``num_questions`` valid candidates after a seeded shuffle.
+
+    ``exclude_ids`` (optional) skips rows whose id appears in the set; used
+    by the training pipeline to keep val/test disjoint from train.
+    """
     rng = random.Random(selection_seed)
     order = list(range(len(rows)))
     rng.shuffle(order)
@@ -190,6 +206,8 @@ def select_questions(
         if len(selected) >= num_questions:
             break
         row = rows[index]
+        if exclude_ids is not None and _row_id(row) in exclude_ids:
+            continue
         if not is_valid_candidate(row, evidence_partition):
             continue
         titles = []
@@ -208,6 +226,7 @@ def select_questions(
             bob_title, row_document_paragraph(row, bob_title)
         )
         evidence_all = ""
+        document_pool: List[Dict[str, Any]] = []
         partition_metadata: Dict[str, Any] = {
             "rule": "alphabetical_supporting_title",
             "alice_title": alice_title,
@@ -223,6 +242,9 @@ def select_questions(
                 }
                 for doc in context_documents
             ]
+            # Pre-partition pool: original context order, gold labels kept
+            # for audit only (they never enter rendered evidence).
+            document_pool = [dict(doc) for doc in documents]
             by_title = {doc["title"]: doc for doc in documents}
             distractors = [
                 dict(doc) for doc in documents if not doc["is_supporting"]
@@ -291,6 +313,7 @@ def select_questions(
                 },
                 partition_metadata=partition_metadata,
                 evidence_all=evidence_all,
+                document_pool=document_pool,
             )
         )
     return selected
@@ -303,15 +326,24 @@ def build_manifest(
     manifest_path: Path,
     evidence_partition: str = "supporting_only",
     partition_seed: int = 0,
+    exclude_ids: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
     """Select questions and write the manifest JSON file.
 
     The manifest records the selection rules, per-rule rejection counts,
     the selected questions (with partitions), and a sha256 of the
     ``questions`` payload for integrity checking on load.
+
+    ``exclude_ids`` (optional) removes rows whose id appears in the set;
+    excluded rows are counted under ``excluded_split_overlap``.
     """
     rejected_counts: Dict[str, int] = {}
     for row in rows:
+        if exclude_ids is not None and _row_id(row) in exclude_ids:
+            rejected_counts["excluded_split_overlap"] = (
+                rejected_counts.get("excluded_split_overlap", 0) + 1
+            )
+            continue
         if is_valid_candidate(row, evidence_partition):
             continue
         reason = _reject_reason(row, evidence_partition) or "unknown"
@@ -323,6 +355,7 @@ def build_manifest(
         selection_seed,
         evidence_partition=evidence_partition,
         partition_seed=partition_seed,
+        exclude_ids=exclude_ids,
     )
     if len(selected) < num_questions:
         raise RuntimeError(

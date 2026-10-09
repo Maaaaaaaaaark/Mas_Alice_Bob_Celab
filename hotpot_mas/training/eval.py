@@ -76,6 +76,7 @@ def cache_identity(
     decode: DecodeConfig,
     prompts: TrainingPrompts,
     prompt_dir: Path,
+    question_ids: Optional[List[str]] = None,
 ) -> str:
     """Stable cache key: same inputs -> same cached reports."""
     import hashlib
@@ -88,6 +89,7 @@ def cache_identity(
             "prompt_version": prompts.version,
             "prompt_hashes": prompts.hashes,
             "prompt_dir": str(prompt_dir),
+            "question_ids": sorted(question_ids) if question_ids else None,
         },
         sort_keys=True,
     )

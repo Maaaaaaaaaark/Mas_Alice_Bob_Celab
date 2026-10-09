@@ -480,16 +480,26 @@ class SFTConfig:
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "SFTConfig":
+        # DecodeConfig's generic defaults are for Stage 1 rollout sampling.
+        # Stage 2 must stay deterministic when either nested decode block is
+        # omitted, so inherit SFTConfig's own defaults instead.
+        defaults = cls()
         return cls(
             num_epochs=int(raw.get("num_epochs", 3)),
             learning_rate=float(raw.get("learning_rate", 1e-4)),
             weight_decay=float(raw.get("weight_decay", 0.0)),
             batch_size=int(raw.get("batch_size", 4)),
             worker_eval_decode=DecodeConfig.from_dict(
-                raw.get("worker_eval_decode", {})
+                raw.get(
+                    "worker_eval_decode",
+                    defaults.worker_eval_decode.to_dict(),
+                )
             ),
             synthesizer_decode=DecodeConfig.from_dict(
-                raw.get("synthesizer_decode", {})
+                raw.get(
+                    "synthesizer_decode",
+                    defaults.synthesizer_decode.to_dict(),
+                )
             ),
         )
 

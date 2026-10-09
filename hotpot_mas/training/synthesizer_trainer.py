@@ -14,9 +14,9 @@ Loop outline:
    template hashes. C0 and Cphi read the **same** cache, and the training
    cache is separate from the val/test evaluation cache.
 3. Release the worker policy before loading C (single GPU).
-4. Evaluate the freshly initialized C (zero-init LoRA == base model) at
-   step 0: the C0 baseline on validation and test, with and without
-   reports (Evaluate_empty control).
+4. Save the freshly initialized C (zero-init LoRA == base model) and
+   evaluate its step-0 validation baseline with and without reports.  The
+   held-out test split is not touched until model selection is complete.
 5. SFT-train C's LoRA ``phi`` only: AdamW minibatches over D_C built from
    the cached reports, cross-entropy on the **gold-answer tokens only**
    (question, reports and the ``Celab: <FINAL>`` wrapper are masked),
@@ -84,7 +84,7 @@ class WorkerCheckpoint:
     run_dir: Optional[Path]  # Stage 1 run dir when one was resolved
     identity: str  # stable id for the report-cache key
     adapter_config: Optional[Dict[str, Any]]  # peft adapter_config.json
-    resolution: str  # "adapter_dir" | "metrics_jsonl" | "state_jsonl"
+    resolution: str  # "adapter_dir" | "metrics_jsonl" | "state_json"
 
 
 def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -105,6 +105,22 @@ def _adapter_config(adapter_dir: Path) -> Optional[Dict[str, Any]]:
     if not config_path.is_file():
         return None
     return _read_json(config_path)
+
+
+def _adapter_fingerprint(adapter_dir: Path) -> str:
+    """Return a content hash suitable for report-cache identities."""
+    digest = hashlib.sha256()
+    files = sorted(path for path in adapter_dir.rglob("*") if path.is_file())
+    if not files:
+        # Empty directories only occur in lightweight tests.  Do not treat
+        # two unrelated empty checkpoint paths as the same model.
+        digest.update(str(adapter_dir.resolve()).encode("utf-8"))
+    for file_path in files:
+        digest.update(str(file_path.relative_to(adapter_dir)).encode("utf-8"))
+        with file_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()[:12]
 
 
 def resolve_worker_checkpoint(path: Any) -> WorkerCheckpoint:
@@ -145,12 +161,11 @@ def resolve_worker_checkpoint(path: Any) -> WorkerCheckpoint:
             or list(candidate_run_dir.glob("step_*"))
         ):
             run_dir = candidate_run_dir
+        fingerprint = _adapter_fingerprint(adapter_dir)
         identity = (
-            f"step_{best_step:05d}"
+            f"step_{best_step:05d}-{fingerprint}"
             if best_step is not None
-            else "adapter-" + hashlib.sha256(
-                str(adapter_dir).encode("utf-8")
-            ).hexdigest()[:12]
+            else f"adapter-{fingerprint}"
         )
         return WorkerCheckpoint(
             requested=requested,
@@ -231,7 +246,7 @@ def resolve_worker_checkpoint(path: Any) -> WorkerCheckpoint:
                     f"records best_val_f1 {state_best_f1!r}"
                 )
     elif final_state is not None and final_state.get("best_step") is not None:
-        resolution = "state_jsonl"
+        resolution = "state_json"
         best_step = int(final_state["best_step"])
         best_val_f1 = float(final_state["best_val_f1"])
     else:
@@ -254,7 +269,10 @@ def resolve_worker_checkpoint(path: Any) -> WorkerCheckpoint:
         best_step=best_step,
         best_val_f1=best_val_f1,
         run_dir=run_dir,
-        identity=f"step_{best_step:05d}",
+        identity=(
+            f"step_{best_step:05d}-"
+            f"{_adapter_fingerprint(adapter_dir)}"
+        ),
         adapter_config=_adapter_config(adapter_dir),
         resolution=resolution,
     )
@@ -333,6 +351,7 @@ class SynthesizerTrainer:
             self.stage_dir / "step0_baseline.json",
             self.stage_dir / "final_comparison.json",
             self.stage_dir / "report.md",
+            self.stage_dir / "c0_checkpoint",
             self.stage_dir / "best_checkpoint",
         ] + sorted(self.stage_dir.glob("epoch_*"))
         existing = [str(p) for p in artifacts if p.exists()]
@@ -398,6 +417,7 @@ class SynthesizerTrainer:
                 cfg.sft.worker_eval_decode,
                 self.prompts,
                 cfg.prompt_dir,
+                question_ids=[q.question_id for q in questions],
             )
             cache = EvalReportCache(cache_dir / f"{key}.json")
             generate_report_cache(
@@ -704,10 +724,10 @@ class SynthesizerTrainer:
     # -- step-0 baseline (C0) ------------------------------------------
 
     def _record_step0_baseline(self) -> Dict[str, Any]:
-        """Evaluate the fresh C (== base model) before the first update."""
+        """Evaluate fresh C on validation only before the first update."""
         baseline: Dict[str, Any] = {"epoch": 0}
         results: Dict[str, SplitEvalResult] = {}
-        for split in ("val", "test"):
+        for split in ("val",):
             with_reports = self._evaluate_split(split)
             empty = self._evaluate_split(split, empty_control=True)
             results[f"{split}"] = with_reports
@@ -771,7 +791,8 @@ class SynthesizerTrainer:
 
     def _write_final_comparison(
         self,
-        baseline: Dict[str, Any],
+        c0_test: SplitEvalResult,
+        c0_empty_test: SplitEvalResult,
         c_phi_test: SplitEvalResult,
         c_phi_empty_test: SplitEvalResult,
     ) -> Dict[str, Any]:
@@ -784,14 +805,15 @@ class SynthesizerTrainer:
             },
             "test_ab_tokens": self._mean_ab_tokens("test"),
             "note": (
-                "C0 was scored at step 0 before the first SFT update; "
-                "C_phi after training, restored to the validation-best "
+                "After validation-based model selection, C0 and C_phi "
+                "were scored on the held-out test split; C_phi was "
+                "restored to the validation-best "
                 "checkpoint; all four conditions share the identical "
                 "cached test reports (A/B token counts come from the "
                 "cache and are not counted as C's tokens)."
             ),
-            "c0_with_reports": baseline["test_with_reports"],
-            "c0_empty_reports": baseline["test_empty_reports"],
+            "c0_with_reports": self._condition_summary(c0_test),
+            "c0_empty_reports": self._condition_summary(c0_empty_test),
             "c_phi_with_reports": self._condition_summary(c_phi_test),
             "c_phi_empty_reports": self._condition_summary(c_phi_empty_test),
         }
@@ -850,7 +872,10 @@ class SynthesizerTrainer:
         logger.info("Stage 2 SFT: %d epochs, batch size %d, lr %g",
                     self.cfg.sft.num_epochs, self.cfg.sft.batch_size,
                     self.cfg.sft.learning_rate)
-        baseline = self._record_step0_baseline()
+        # Preserve the exact zero-LoRA C0 state.  Test data is deliberately
+        # not evaluated until validation has selected the trained model.
+        self._save_checkpoint("c0_checkpoint", 0, -1.0)
+        self._record_step0_baseline()
 
         for epoch in range(1, self.cfg.sft.num_epochs + 1):
             train_loss, grad_norm = self._train_epoch(epoch)
@@ -894,7 +919,14 @@ class SynthesizerTrainer:
                 "no validation-best checkpoint was saved (mean_val_f1 "
                 "never exceeded -1.0); refusing to continue"
             )
-        # Restore the validation-best C, never the last epoch.
+        # Final held-out comparison.  Restore C0 first, then the
+        # validation-best trained C; neither test score influences model
+        # selection.
+        self.synthesizer.load_adapter(
+            self.stage_dir / "c0_checkpoint" / "adapter"
+        )
+        c0_test = self._evaluate_split("test")
+        c0_empty_test = self._evaluate_split("test", empty_control=True)
         self.synthesizer.load_adapter(
             self.stage_dir / "best_checkpoint" / "adapter"
         )
@@ -906,7 +938,7 @@ class SynthesizerTrainer:
         c_phi_test = self._evaluate_split("test")
         c_phi_empty_test = self._evaluate_split("test", empty_control=True)
         comparison = self._write_final_comparison(
-            baseline, c_phi_test, c_phi_empty_test
+            c0_test, c0_empty_test, c_phi_test, c_phi_empty_test
         )
         self._write_report(comparison)
         logger.info(

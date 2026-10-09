@@ -352,8 +352,24 @@ class HFPolicy:
     def load_adapter(self, adapter_dir: Path) -> None:
         if not adapter_dir.is_dir():
             raise FileNotFoundError(f"adapter directory not found: {adapter_dir}")
-        # Re-attach the stored adapter to the same base model in place.
-        self.model.load_adapter(str(adapter_dir))
+        # ``get_peft_model`` already created the active ``default`` adapter.
+        # Load weights into it in place; ``PeftModel.load_adapter`` creates a
+        # new named adapter and requires an adapter name in current PEFT.
+        from peft.utils.save_and_load import (
+            load_peft_weights,
+            set_peft_model_state_dict,
+        )
+
+        state = load_peft_weights(str(adapter_dir), device=self.device_name)
+        result = set_peft_model_state_dict(
+            self.model, state, adapter_name="default"
+        )
+        unexpected = list(getattr(result, "unexpected_keys", []) or [])
+        if unexpected:
+            raise RuntimeError(
+                "unexpected keys while loading worker adapter: "
+                + ", ".join(unexpected[:10])
+            )
 
     # -- parameter bookkeeping ------------------------------------------
 

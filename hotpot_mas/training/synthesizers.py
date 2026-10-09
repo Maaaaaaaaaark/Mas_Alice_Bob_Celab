@@ -135,6 +135,10 @@ class HFSynthesizer:
     ) -> SynthResult:
         import torch
 
+        # SFT forwards put the trainable C in training mode.  Generation
+        # must explicitly return to eval mode, especially for future base
+        # models that contain dropout.
+        self.model.eval()
         prompt_ids = self.tokenize(messages)
         if len(prompt_ids) > self.max_input_length:
             raise RuntimeError(
@@ -292,6 +296,7 @@ class HFLoraSynthesizer(HFSynthesizer):
         self, input_ids: Tensor, attention_mask: Tensor
     ) -> Tensor:
         """Full-vocabulary logits for the SFT loss, gradients enabled."""
+        self.model.train()
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -306,7 +311,21 @@ class HFLoraSynthesizer(HFSynthesizer):
     def load_adapter(self, adapter_dir: Path) -> None:
         if not adapter_dir.is_dir():
             raise FileNotFoundError(f"adapter directory not found: {adapter_dir}")
-        self.model.load_adapter(str(adapter_dir))
+        from peft.utils.save_and_load import (
+            load_peft_weights,
+            set_peft_model_state_dict,
+        )
+
+        state = load_peft_weights(str(adapter_dir), device=self.device_name)
+        result = set_peft_model_state_dict(
+            self.model, state, adapter_name="default"
+        )
+        unexpected = list(getattr(result, "unexpected_keys", []) or [])
+        if unexpected:
+            raise RuntimeError(
+                "unexpected keys while loading synthesizer adapter: "
+                + ", ".join(unexpected[:10])
+            )
 
     def info(self) -> Dict[str, Any]:
         return {

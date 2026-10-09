@@ -45,7 +45,7 @@ class TestResolveWorkerCheckpoint:
         ckpt = resolve_worker_checkpoint(run_dir)
         assert ckpt.best_step == 2  # not the latest step 4
         assert ckpt.best_val_f1 == 0.9
-        assert ckpt.identity == "step_00002"
+        assert ckpt.identity.startswith("step_00002-")
         assert ckpt.resolution == "metrics_jsonl"
         assert ckpt.adapter_dir == run_dir / "step_00002" / "adapter"
         assert ckpt.adapter_dir.is_dir()
@@ -58,7 +58,7 @@ class TestResolveWorkerCheckpoint:
         ckpt = resolve_worker_checkpoint(adapter_dir)
         assert ckpt.adapter_dir == adapter_dir
         assert ckpt.best_step == 2
-        assert ckpt.identity == "step_00002"
+        assert ckpt.identity.startswith("step_00002-")
         assert ckpt.resolution == "adapter_dir"
 
     def test_missing_val_f1_raises(self, tmp_path) -> None:
@@ -102,7 +102,17 @@ class TestResolveWorkerCheckpoint:
         ckpt = resolve_worker_checkpoint(run_dir)
         assert ckpt.best_step == expected["best_step"] == 2
         assert ckpt.best_val_f1 == expected["best_val_f1"] == 0.9
-        assert ckpt.resolution == "state_jsonl"
+        assert ckpt.resolution == "state_json"
+
+    def test_checkpoint_identity_changes_with_adapter_content(
+        self, tmp_path
+    ) -> None:
+        run_dir, _ = make_fake_worker_run(tmp_path, {1: 0.3, 2: 0.9})
+        first = resolve_worker_checkpoint(run_dir).identity
+        adapter_file = run_dir / "step_00002" / "adapter" / "weights.bin"
+        adapter_file.write_bytes(b"different trained weights")
+        second = resolve_worker_checkpoint(run_dir).identity
+        assert first != second
 
     def test_nonexistent_raises(self, tmp_path) -> None:
         with pytest.raises(FileNotFoundError):
@@ -216,8 +226,6 @@ class TestSynthesizerTrainerEndToEnd:
         for key in (
             "val_with_reports",
             "val_empty_reports",
-            "test_with_reports",
-            "test_empty_reports",
         ):
             assert key in baseline
             assert baseline[key]["mean_f1"] == 0.0  # fresh C0 answers empty
@@ -238,20 +246,20 @@ class TestSynthesizerTrainerEndToEnd:
     def test_c0_and_c_phi_share_identical_reports(self, stage2) -> None:
         trainer, policy, synthesizer = make_trainer(stage2["cfg"])
         trainer.train()
-        # 2 val + 2 test questions; C0 covers val, val-empty, test,
-        # test-empty at step 0 (8 calls), then 2 epochs of val + val-empty
-        # (8 calls), then the final test + test-empty (4 calls).
+        # C0 covers val + val-empty at step 0 (4 calls), then 2 epochs of
+        # val + val-empty (8 calls).  Only after validation selection, the
+        # final C0 and C_phi test comparisons make 8 calls.
         calls = synthesizer.answer_calls
         assert len(calls) == 20
         # C0's test calls (with reports) == C_phi's test calls.
-        assert calls[4:6] == calls[16:18]
+        assert calls[12:14] == calls[16:18]
         # C0's empty-test calls == C_phi's empty-test calls.
-        assert calls[6:8] == calls[18:20]
+        assert calls[14:16] == calls[18:20]
         # The worker policy decoded exactly once per (question, side):
         # 4 train + 2 val + 2 test questions, A and B each.
         assert policy._calls.count("decode") == 16
         # The empty-control calls really use empty reports.
-        for question, a_report, b_report in calls[6:8]:
+        for question, a_report, b_report in calls[14:16]:
             assert a_report == "" and b_report == ""
 
     def test_validation_best_checkpoint_restored(self, stage2) -> None:

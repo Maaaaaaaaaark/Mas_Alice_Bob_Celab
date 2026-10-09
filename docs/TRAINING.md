@@ -1,4 +1,4 @@
-# Cross-Paired GRPO Training Experiments (Stage 1 Workers)
+# Cross-Paired GRPO and Synthesizer SFT Training (Stages 1–2)
 
 This document covers the **training** experiments added on top of the
 inference baseline. The algorithm is specified in
@@ -174,9 +174,10 @@ TeX Algorithm 2: freeze the Stage 1 workers and SFT-train synthesizer C.
    (question, side) with the *worker-evaluation* decode settings, cached per
    split under `report_cache/<identity>.json`. The identity is a hash over
    {worker checkpoint, split, decode params, prompt version, prompt hashes},
-   so a different checkpoint/config never reuses stale reports. C0 (step 0)
-   and Cφ (final test) always read the *same* cache; the training cache is
-   separate from the val/test caches.
+   plus the exact question-id set. The worker identity includes a content
+   hash of the adapter, so a different checkpoint or manifest never reuses
+   stale reports. C0 and Cφ always read the *same* cache; the training
+   cache is separate from the val/test caches.
 4. **SFT on gold-answer tokens only** — C shares the Gemma-3-1B base with
    its own fresh LoRA φ (r=16, α=32, dropout=0, all-linear; a fresh adapter
    equals the base model, so C0 is the step-0 evaluation — enforced at load
@@ -187,13 +188,15 @@ TeX Algorithm 2: freeze the Stage 1 workers and SFT-train synthesizer C.
    tokenizer is verified; if no token lies fully inside the answer span the
    run fails instead of supervising the whole completion). The loss uses the
    causal next-token shift and per-example `1/|y*|` averaging (Eq. 4).
-5. **Loop** — per minibatch: `zero_grad → backward → step`, only C's LoRA
+5. **Loop** — save the untouched zero-LoRA C0 adapter, then evaluate C0 on
+   validation only. Per minibatch: `zero_grad → backward → step`, only C's LoRA
    gets gradients; per epoch: validation on the fixed cached reports
    (F1/EM/C tokens, plus the empty-report control), save `epoch_NNN/`, save
    `best_checkpoint/` on improvement. After the last epoch the best C is
    *restored* (never the last epoch). Memory: the worker model is deleted
    before C is loaded (single A5000).
-6. **Final comparison** — on the identical cached test reports:
+6. **Final comparison** — only after validation-based model selection,
+   restore C0 and the best Cφ in turn and score the identical cached test reports:
    C0 + reports, Cφ + reports, C0 + empty, Cφ + empty → mean F1 / EM / C
    generated tokens / parse counts, plus A/B token counts (from the cache,
    not counted as C's tokens), in `final_comparison.json` + `report.md`.
@@ -201,7 +204,7 @@ TeX Algorithm 2: freeze the Stage 1 workers and SFT-train synthesizer C.
 **Outputs** land under
 `outputs/training/synthesizer_sft/<mode>/`:
 `config_snapshot.json`, `worker_checkpoint_provenance.json`,
-`report_cache_metadata.json`, `report_cache/`, `step0_baseline.json`,
+`report_cache_metadata.json`, `report_cache/`, `c0_checkpoint/`, `step0_baseline.json`,
 `metrics.jsonl` (fields: `epoch, train_loss, grad_norm, mean_val_f1,
 mean_val_em, mean_val_c_tokens, empty_val_f1, empty_val_em, best_val_f1,
 checkpoint_path`), `epoch_NNN/`, `best_checkpoint/`,
@@ -218,9 +221,7 @@ frozen workers from the Stage 1 *smoke* run's best checkpoint instead.
   best-C restore, empty-report control, non-finite guards, CLI parsing)
   runs offline; a real Gemma trace/smoke run still requires the GPU
   cluster and remains the verification gate for model loading, PEFT
-  integration, CUDA placement, and GPU memory use. The Stage 2 suite has
-  not been executed on the development machine (no Python interpreter
-  there) — run it in the cluster environment.
+  integration, CUDA placement, and GPU memory use.
 - The Stage 2 worker-adapter compatibility check is skipped when the
   adapter carries no `adapter_config.json` (the Stage 1 adapter dirs do
   carry it, so this only affects hand-made checkpoints).

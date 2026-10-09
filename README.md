@@ -393,11 +393,13 @@ retains sample run IDs for manual review.
 ## 12. Cross-paired GRPO training experiments (new, additive)
 
 The repository now also contains a **training** pipeline — cross-paired GRPO
-for the workers (Stage 1) and, later, SFT of the synthesizer (Stage 2) —
-specified by `cross_paired_grpo.tex`. It is deliberately additive: the
+for the workers (Stage 1) and SFT of the synthesizer (Stage 2) — specified
+by `cross_paired_grpo.tex`. It is deliberately additive: the
 inference baseline described above is unchanged. See
 [docs/TRAINING.md](docs/TRAINING.md) for the document precedence, the
 documented TeX deviations, the data flow, run commands, and known
 limitations. Training code lives in `hotpot_mas/training/`, configuration
 in `configs/cross_paired_grpo_workers.yaml`, prompts in `prompts_training/`,
-and its CPU-only test suite in `tests/test_training_*.py`.
+and its CPU-only test suite in `tests/test_training_*.py`. Stage 2 uses
+`configs/synthesizer_sft.yaml`; exact commands and outputs are documented in
+the training guide.

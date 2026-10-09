@@ -199,6 +199,11 @@ class TestSynthesizerConfig:
         assert sft.learning_rate == 1e-4
         assert sft.synthesizer_decode.do_sample is False
 
+    def test_sft_from_dict_keeps_deterministic_decode_defaults(self):
+        sft = SFTConfig.from_dict({"num_epochs": 2})
+        assert sft.worker_eval_decode.do_sample is False
+        assert sft.synthesizer_decode.do_sample is False
+
     def _write_sft_yaml(
         self, tmp_path: Path, extra: Dict[str, Any] = None,
         name: str = "sft.yaml",

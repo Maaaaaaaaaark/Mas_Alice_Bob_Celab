@@ -147,6 +147,7 @@ def test_failure_attribution_partitions_non_em_runs(tmp_path: Path):
     report = written["failure_attribution_report"].read_text(encoding="utf-8")
     assert "One-Shot MAS Failure Attribution" in report
     assert "Heuristic observational attribution" in report
+    assert "Where is the gold span in private evidence?" in report
 
 
 def test_failure_attribution_reports_worker_location_and_partial_lines(

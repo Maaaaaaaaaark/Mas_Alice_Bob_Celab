@@ -19,7 +19,7 @@ from .evaluation import normalize_answer
 
 
 FAILURE_LABELS = {
-    "system_or_protocol_failure": "System or protocol failure",
+    "system_or_protocol_failure": "Empty final answer or system/protocol failure",
     "final_answer_overcomplete": "Final answer contains gold but is not exact",
     "synthesis_selection_failure": "Worker report contains gold but C misses it",
     "worker_extraction_failure": "Evidence contains gold but worker reports miss it",
@@ -128,6 +128,7 @@ def analyze_failure_attribution(
     category_f1: MutableMapping[str, List[float]] = defaultdict(list)
     category_tokens: MutableMapping[str, List[float]] = defaultdict(list)
     samples: MutableMapping[str, List[Dict[str, Any]]] = defaultdict(list)
+    sampled_question_ids: MutableMapping[str, set[str]] = defaultdict(set)
     expected_seed_set: set[int] | None = None
 
     with runs_path.open(encoding="utf-8") as handle:
@@ -235,7 +236,10 @@ def analyze_failure_attribution(
             category_tokens[category].append(
                 float(run.get("total_generated_tokens", 0.0))
             )
-            if len(samples[category]) < samples_per_category:
+            if (
+                len(samples[category]) < samples_per_category
+                and question_id not in sampled_question_ids[category]
+            ):
                 samples[category].append(
                     {
                         "run_id": run_id,
@@ -249,6 +253,7 @@ def analyze_failure_attribution(
                         "report_location": report_bucket,
                     }
                 )
+                sampled_question_ids[category].add(question_id)
 
     failures = total_runs - outcome_counts["exact_success"]
     categories = {}
@@ -429,10 +434,10 @@ def _markdown_report(summary: Mapping[str, Any]) -> str:
 
     lines += [
         "",
-        "## Which worker report contains the gold span?",
+        "## Where is the gold span in private evidence?",
         "",
-        "| Report location | Runs | Rate | EM within bucket |",
-        "|---|---:|---:|---:|",
+        "| Evidence location | Runs | Rate |",
+        "|---|---:|---:|",
     ]
     bucket_labels = {
         "alice_only": "Alice only",
@@ -440,6 +445,17 @@ def _markdown_report(summary: Mapping[str, Any]) -> str:
         "both": "Both",
         "neither": "Neither",
     }
+    for key, label in bucket_labels.items():
+        item = summary["gold_span_location_in_private_evidence"][key]
+        lines.append(f"| {label} | {item['count']} | {item['rate']:.4f} |")
+
+    lines += [
+        "",
+        "## Which worker report contains the gold span?",
+        "",
+        "| Report location | Runs | Rate | EM within bucket |",
+        "|---|---:|---:|---:|",
+    ]
     for key, label in bucket_labels.items():
         item = summary["gold_span_location_in_worker_reports"][key]
         lines.append(

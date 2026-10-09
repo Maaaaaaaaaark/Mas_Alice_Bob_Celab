@@ -636,6 +636,65 @@ class WorkerTrainer:
             }
         )
 
+    def _record_step0_baseline(self) -> None:
+        """Evaluate and checkpoint the untouched shared worker LoRA."""
+        val_result = self._evaluate("val", 0)
+        if val_result.mean_f1 is None:
+            raise RuntimeError("step-0 validation returned no questions")
+        self.best_val_f1 = float(val_result.mean_f1)
+        self.best_step = 0
+        self.best_policy_state = self.policy.state_dict()
+        torch.save(
+            self.best_policy_state,
+            self.stage_dir / "best_policy_state.pt",
+        )
+        checkpoint_path = self._save_checkpoint(0, self.best_val_f1)
+        baseline = {
+            "update": 0,
+            "mean_val_f1": self.best_val_f1,
+            "mean_val_em": val_result.mean_em,
+            "num_questions": len(val_result.questions),
+            "checkpoint_path": str(checkpoint_path),
+        }
+        (self.stage_dir / "step0_baseline.json").write_text(
+            json.dumps(baseline, indent=2), encoding="utf-8"
+        )
+        self.metrics.append(
+            {
+                "run_id": "update-00000",
+                "update": 0,
+                "mode": self.mode,
+                "attempted_questions": 0,
+                "signal_questions": 0,
+                "discarded_questions": 0,
+                "discard_rate": 0.0,
+                "signal_rate_a": 0.0,
+                "signal_rate_b": 0.0,
+                "signal_rate_both": 0.0,
+                "insufficient_signal": False,
+                "mean_reward": None,
+                "mean_val_f1": self.best_val_f1,
+                "mean_val_em": val_result.mean_em,
+                "val_note": "untrained step-0 worker baseline",
+                "mean_a_tokens": None,
+                "mean_b_tokens": None,
+                "mean_c_tokens": None,
+                "loss": None,
+                "grad_norm": None,
+                "approx_kl": None,
+                "clip_fraction": None,
+                "entropy": None,
+                "num_policy_epochs": 0,
+                "best_val_f1": self.best_val_f1,
+                "checkpoint_path": str(checkpoint_path),
+            }
+        )
+        logger.info(
+            "step-0 worker baseline: val F1 %.4f EM %.4f",
+            self.best_val_f1,
+            val_result.mean_em or 0.0,
+        )
+
     # ------------------------------------------------------------------
     # trace assembly (trace mode only)
     # ------------------------------------------------------------------
@@ -829,6 +888,14 @@ class WorkerTrainer:
         logger.info(describe_split(cfg))
         print(describe_split(cfg))
 
+        if (
+            workers.step0_eval
+            and not trace_mode
+            and self.start_step == 0
+            and not self.metrics_path.exists()
+        ):
+            self._record_step0_baseline()
+
         final_outcomes: List[UpdateOutcome] = []
         for step in range(self.start_step + 1, workers.steps + 1):
             rollouts, attempted, discarded, signal_counts = (
@@ -892,14 +959,50 @@ class WorkerTrainer:
 
         # Final test evaluation uses the validation-selected policy, not
         # merely the parameters from the final optimization step.
-        if cfg.workers.final_test_eval and not trace_mode and final_outcomes:
+        test_result: Optional[SplitEvalResult] = None
+        step0_test_result: Optional[SplitEvalResult] = None
+        if cfg.workers.final_test_eval and not trace_mode:
             if self.best_policy_state is None:
                 raise RuntimeError(
                     "final test evaluation requested but no validation-selected "
                     "worker checkpoint is available"
                 )
+            if workers.step0_eval:
+                self.policy.load_adapter(
+                    self.stage_dir / "step_00000" / "adapter"
+                )
+                step0_test_result = self._evaluate("test", 0)
             self.policy.load_state_dict(self.best_policy_state)
-            test_result = self._evaluate("test", workers.steps)
+            test_result = self._evaluate("test", self.best_step or 0)
+            (self.stage_dir / "final_test.json").write_text(
+                json.dumps(
+                    {
+                        "best_step": self.best_step,
+                        "best_val_f1": self.best_val_f1,
+                        "step0": {
+                            "mean_test_f1": step0_test_result.mean_f1,
+                            "mean_test_em": step0_test_result.mean_em,
+                        }
+                        if step0_test_result is not None
+                        else None,
+                        "best": {
+                            "mean_test_f1": test_result.mean_f1,
+                            "mean_test_em": test_result.mean_em,
+                        },
+                        "delta_f1_best_minus_step0": (
+                            float(test_result.mean_f1)
+                            - float(step0_test_result.mean_f1)
+                            if step0_test_result is not None
+                            and test_result.mean_f1 is not None
+                            and step0_test_result.mean_f1 is not None
+                            else None
+                        ),
+                        "num_questions": len(test_result.questions),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
             logger.info(
                 "final test: mean_f1=%.4f mean_em=%.4f",
                 test_result.mean_f1 or 0.0, test_result.mean_em or 0.0,
@@ -911,6 +1014,16 @@ class WorkerTrainer:
             "updates_completed": len(final_outcomes),
             "best_val_f1": self.best_val_f1,
             "best_step": self.best_step,
+            "step0_baseline_path": (
+                str(self.stage_dir / "step0_baseline.json")
+                if workers.step0_eval and not trace_mode
+                else None
+            ),
+            "final_test_path": (
+                str(self.stage_dir / "final_test.json")
+                if test_result is not None
+                else None
+            ),
             "trace_path": (
                 str(self.stage_dir / "trace.json") if trace_mode else None
             ),

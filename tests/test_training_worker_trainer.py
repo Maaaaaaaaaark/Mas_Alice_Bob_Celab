@@ -74,6 +74,37 @@ def read_metrics(stage_dir: Path) -> List[Dict[str, Any]]:
 
 
 class TestEndToEndUpdate:
+    def test_optional_step0_baseline_and_final_test_are_recorded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        rows = make_rows(12)
+        trainer = make_prepared_trainer(
+            tmp_path,
+            rows,
+            monkeypatch,
+            all_both_scripts(rows),
+            step0_eval=True,
+            final_test_eval=True,
+            steps=1,
+            eval_interval=1,
+        )
+        summary = trainer.train()
+        stage_dir = trainer.cfg.stage_dir()
+        records = read_metrics(stage_dir)
+        assert [record["update"] for record in records] == [0, 1]
+        assert records[0]["val_note"] == "untrained step-0 worker baseline"
+        assert (stage_dir / "step_00000" / "adapter").is_dir()
+        assert (stage_dir / "step0_baseline.json").is_file()
+        assert (stage_dir / "final_test.json").is_file()
+        final_test = json.loads(
+            (stage_dir / "final_test.json").read_text(encoding="utf-8")
+        )
+        assert final_test["step0"] is not None
+        assert final_test["best"] is not None
+        assert final_test["delta_f1_best_minus_step0"] is not None
+        assert summary["step0_baseline_path"] is not None
+        assert summary["final_test_path"] is not None
+
     def test_ab_share_one_theta_and_only_theta_is_trained(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):

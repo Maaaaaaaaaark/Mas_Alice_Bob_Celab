@@ -234,6 +234,7 @@ class WorkerTrainingConfig:
     questions_per_update: int = 8  # N: signal questions per update
     steps: int = 100  # T: number of updates
     eval_interval: int = 10  # K: validation evaluation frequency
+    step0_eval: bool = False  # evaluate/save the untrained worker baseline
     final_test_eval: bool = True  # run Evaluate(theta*, C, D_test) at the end
     fail_on_insufficient_signal: bool = False
     rollout: DecodeConfig = field(default_factory=DecodeConfig)
@@ -263,6 +264,7 @@ class WorkerTrainingConfig:
             questions_per_update=int(raw.get("questions_per_update", 8)),
             steps=int(raw.get("steps", 100)),
             eval_interval=int(raw.get("eval_interval", 10)),
+            step0_eval=bool(raw.get("step0_eval", False)),
             final_test_eval=bool(raw.get("final_test_eval", True)),
             fail_on_insufficient_signal=bool(
                 raw.get("fail_on_insufficient_signal", False)
@@ -288,6 +290,7 @@ class WorkerTrainingConfig:
             "questions_per_update": self.questions_per_update,
             "steps": self.steps,
             "eval_interval": self.eval_interval,
+            "step0_eval": self.step0_eval,
             "final_test_eval": self.final_test_eval,
             "fail_on_insufficient_signal": self.fail_on_insufficient_signal,
             "rollout": self.rollout.to_dict(),

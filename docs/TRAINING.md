@@ -131,6 +131,11 @@ python -m hotpot_mas.training.cli prepare-data \
 python -m hotpot_mas.training.cli train-workers \
   --config configs/cross_paired_grpo_workers.yaml --mode smoke
 
+# Stage 1 G=6 pilot (500/64/64 split, 10 updates, step-0 baseline)
+python -m hotpot_mas.training.cli prepare-data \
+  --config configs/cross_paired_grpo_workers_g6.yaml --mode pilot --force
+sbatch scripts/violet_train_workers_g6.sbatch
+
 # Resuming from the latest checkpoint
 python -m hotpot_mas.training.cli train-workers \
   --config configs/cross_paired_grpo_workers.yaml --mode smoke --resume

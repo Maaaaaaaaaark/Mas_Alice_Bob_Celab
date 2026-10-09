@@ -18,6 +18,7 @@ import torch
 import hotpot_mas.training.data as training_data
 from hotpot_mas.training.data import prepare_manifests
 from hotpot_mas.training.fake_policy import FakePolicy, FakeSynthesizer
+from hotpot_mas.training.eval import QuestionEval, SplitEvalResult
 from hotpot_mas.training.worker_trainer import WorkerTrainer
 from tests.training_test_utils import (
     MATRIX_BOTH,
@@ -145,9 +146,9 @@ class TestEndToEndUpdate:
                 self.sample_theta.append(self.logits.detach().clone())
                 return super().sample_report(messages, generation_seed, decode)
 
-            def teacher_force(self, input_ids, completion_ids):
+            def teacher_force(self, input_ids, completion_ids, decode=None):
                 self.tf_theta.append(self.logits.detach().clone())
-                return super().teacher_force(input_ids, completion_ids)
+                return super().teacher_force(input_ids, completion_ids, decode)
 
         policy = RecordingPolicy()
         trainer = make_prepared_trainer(
@@ -264,6 +265,44 @@ class TestEndToEndUpdate:
 
 
 class TestCheckpointAndResume:
+    def test_final_test_restores_best_validation_policy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        rows = make_rows(8)
+        policy = FakePolicy()
+        trainer = make_prepared_trainer(
+            tmp_path,
+            rows,
+            monkeypatch,
+            all_both_scripts(rows),
+            policy=policy,
+            steps=2,
+            eval_interval=1,
+            final_test_eval=True,
+        )
+        states: Dict[int, Dict[str, torch.Tensor]] = {}
+        original_update = trainer._apply_grpo_update
+
+        def recording_update(step, *args, **kwargs):
+            outcome = original_update(step, *args, **kwargs)
+            states[step] = policy.state_dict()
+            return outcome
+
+        def scripted_eval(split: str, step: int) -> SplitEvalResult:
+            score = {1: 1.0, 2: 0.0}[step] if split == "val" else 0.5
+            return SplitEvalResult(
+                split=split,
+                questions=[QuestionEval("q", score, score, 0, 0, 0)],
+            )
+
+        trainer._apply_grpo_update = recording_update
+        trainer._evaluate = scripted_eval
+        result = trainer.train()
+
+        assert result["best_step"] == 1
+        assert torch.allclose(policy.logits.detach(), states[1]["logits"])
+        assert not torch.allclose(states[1]["logits"], states[2]["logits"])
+
     def test_resume_continues_from_latest_checkpoint(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):

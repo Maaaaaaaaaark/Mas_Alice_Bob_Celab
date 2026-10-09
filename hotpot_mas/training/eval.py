@@ -166,8 +166,10 @@ def evaluate_workers(
         entry = cache.get(question.question_id) if cache else None
         if entry is not None:
             a_text, b_text = entry["a_text"], entry["b_text"]
-            a_tokens = entry.get("a_tokens")
-            b_tokens = entry.get("b_tokens")
+            a_ids = entry.get("a_ids", [])
+            b_ids = entry.get("b_ids", [])
+            a_tokens = len(a_ids)
+            b_tokens = len(b_ids)
             result.reports_from_cache = True
         else:
             (

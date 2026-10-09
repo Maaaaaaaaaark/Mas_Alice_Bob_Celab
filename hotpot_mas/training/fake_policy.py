@@ -30,7 +30,7 @@ from hotpot_mas.parser import extract_final_answer
 from hotpot_mas.seeds import seed_torch
 
 from .config import DecodeConfig
-from .policy import Report
+from .policy import Report, _behavior_log_probs
 from .synthesizers import SynthResult
 
 
@@ -100,7 +100,7 @@ class FakePolicy:
         logprobs: List[float] = []
         finish_reason = "length"
         with torch.no_grad():
-            log_probs = self._log_probs()
+            log_probs = _behavior_log_probs(self.logits, decode)
             for _ in range(decode.max_new_tokens):
                 if decode.do_sample:
                     next_id = int(
@@ -139,12 +139,17 @@ class FakePolicy:
         return self._sample_loop(generation_seed, decode)
 
     def teacher_force(
-        self, input_ids: List[int], completion_ids: List[int]
+        self,
+        input_ids: List[int],
+        completion_ids: List[int],
+        decode: Optional[DecodeConfig] = None,
     ) -> Tensor:
         """Per-token log probs under the current ``theta`` (grad enabled)."""
         if not completion_ids:
             raise ValueError("completion_ids must be non-empty")
-        log_probs = self._log_probs()
+        log_probs = _behavior_log_probs(
+            self.logits, decode or DecodeConfig()
+        )
         index = torch.tensor(
             completion_ids, device=self.logits.device, dtype=torch.long
         )

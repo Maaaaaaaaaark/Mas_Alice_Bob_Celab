@@ -98,7 +98,7 @@ class TestPromptSetHygiene:
             )
             joined = " ".join(m["content"] for m in messages).lower()
             assert "supporting" not in joined
-            assert "distractor" not in joined
+            assert "is_supporting" not in joined
 
     def test_prompt_version_is_present(self):
         prompts = TrainingPrompts(PROMPTS_TRAINING_DIR)

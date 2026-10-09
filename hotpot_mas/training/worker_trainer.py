@@ -34,6 +34,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 from torch import Tensor
+from torch.nn.utils.rnn import pad_sequence
 
 from hotpot_mas.evaluation import normalize_answer
 from hotpot_mas.logging_io import JsonlWriter, collect_environment_info
@@ -174,6 +175,8 @@ class WorkerTrainer:
 
         self.start_step = 0
         self.best_val_f1 = -1.0
+        self.best_step: Optional[int] = None
+        self.best_policy_state: Optional[Dict[str, Tensor]] = None
         self.q_pointer = 0
         if resume:
             self._load_latest_checkpoint()
@@ -213,6 +216,7 @@ class WorkerTrainer:
                 {
                     "step": step,
                     "best_val_f1": best_val_f1,
+                    "best_step": self.best_step,
                     "q_pointer": self.q_pointer,
                     "mode": self.mode,
                 },
@@ -221,6 +225,18 @@ class WorkerTrainer:
             encoding="utf-8",
         )
         return ckpt_dir
+
+    @staticmethod
+    def _torch_load(path: Path) -> Any:
+        """Load a trusted checkpoint written by this trainer.
+
+        PyTorch 2.6 changed ``torch.load`` to ``weights_only=True`` by
+        default, which cannot deserialize NumPy/Python RNG state.
+        """
+        try:
+            return torch.load(path, map_location="cpu", weights_only=False)
+        except TypeError:  # compatibility with older PyTorch
+            return torch.load(path, map_location="cpu")
 
     def _load_latest_checkpoint(self) -> None:
         step_dirs = sorted(self.stage_dir.glob("step_*"))
@@ -231,9 +247,9 @@ class WorkerTrainer:
         latest = step_dirs[-1]
         state = json.loads((latest / "state.json").read_text(encoding="utf-8"))
         self.policy.load_adapter(latest / "adapter")
-        saved = torch.load(latest / "optimizer.pt", map_location="cpu")
+        saved = self._torch_load(latest / "optimizer.pt")
         restore_optimizer_state(self.optimizer, saved)
-        rng = torch.load(latest / "rng.pt", map_location="cpu")
+        rng = self._torch_load(latest / "rng.pt")
         random.setstate(rng["python_rng"])
         np.random.set_state(rng["numpy_rng"])
         torch.set_rng_state(rng["torch_rng"])
@@ -241,6 +257,13 @@ class WorkerTrainer:
             torch.cuda.set_rng_state_all(rng["torch_cuda_rng"])
         self.start_step = int(state["step"])
         self.best_val_f1 = float(state["best_val_f1"])
+        raw_best_step = state.get("best_step")
+        self.best_step = (
+            int(raw_best_step) if raw_best_step is not None else None
+        )
+        best_state_path = self.stage_dir / "best_policy_state.pt"
+        if best_state_path.is_file():
+            self.best_policy_state = self._torch_load(best_state_path)
         self.q_pointer = int(state.get("q_pointer", 0))
         logger.info(
             "resumed from %s (step %d, best_val_f1 %.4f)",
@@ -334,6 +357,7 @@ class WorkerTrainer:
                 new_logp = self.policy.teacher_force(
                     entry.rollout_report.prompt_ids,
                     entry.rollout_report.report.token_ids,
+                    workers.rollout,
                 )
                 new_logps.append(new_logp)
                 old_logps.append(entry.old_logp)
@@ -343,11 +367,25 @@ class WorkerTrainer:
                 records.append(
                     EpochRecord(entry=entry, new_logp=new_logp.detach())
                 )
-            stacked_new = torch.stack(new_logps)
-            stacked_old = torch.stack(old_logps)
-            adv_t = torch.tensor(advantages)
-            mask_t = torch.stack(masks)
-            weight_t = torch.tensor(weights)
+            device = new_logps[0].device
+            dtype = new_logps[0].dtype
+            lengths = torch.tensor(
+                [value.numel() for value in new_logps], device=device
+            )
+            stacked_new = pad_sequence(
+                new_logps, batch_first=True, padding_value=0.0
+            )
+            stacked_old = pad_sequence(
+                [value.to(device=device, dtype=dtype) for value in old_logps],
+                batch_first=True,
+                padding_value=0.0,
+            )
+            positions = torch.arange(
+                stacked_new.shape[1], device=device
+            ).unsqueeze(0)
+            mask_t = (positions < lengths.unsqueeze(1)).to(dtype=dtype)
+            adv_t = torch.tensor(advantages, device=device, dtype=dtype)
+            weight_t = torch.tensor(weights, device=device, dtype=dtype)
             objectives = per_report_objectives(
                 stacked_new,
                 stacked_old,
@@ -375,9 +413,25 @@ class WorkerTrainer:
         """Mean approx KL, clip fraction, and entropy over the records."""
         if not records:
             return 0.0, 0.0, 0.0
-        new_stack = torch.stack([r.new_logp for r in records])
-        old_stack = torch.stack([r.entry.old_logp for r in records])
-        mask_stack = torch.stack([r.entry.mask for r in records])
+        device = records[0].new_logp.device
+        dtype = records[0].new_logp.dtype
+        new_values = [r.new_logp for r in records]
+        old_values = [
+            r.entry.old_logp.to(device=device, dtype=dtype) for r in records
+        ]
+        lengths = torch.tensor(
+            [value.numel() for value in new_values], device=device
+        )
+        new_stack = pad_sequence(
+            new_values, batch_first=True, padding_value=0.0
+        )
+        old_stack = pad_sequence(
+            old_values, batch_first=True, padding_value=0.0
+        )
+        positions = torch.arange(
+            new_stack.shape[1], device=device
+        ).unsqueeze(0)
+        mask_stack = (positions < lengths.unsqueeze(1)).to(dtype=dtype)
         kl = float(
             approx_kl_per_report(new_stack, old_stack, mask_stack).mean().item()
         )
@@ -638,9 +692,11 @@ class WorkerTrainer:
             # path used for training (detached, for the record only).
             objective_tensor = per_report_objectives(
                 record.new_logp.unsqueeze(0),
-                entry.old_logp.unsqueeze(0),
-                torch.tensor([entry.advantage]),
-                entry.mask.unsqueeze(0),
+                entry.old_logp.to(record.new_logp.device).unsqueeze(0),
+                torch.tensor(
+                    [entry.advantage], device=record.new_logp.device
+                ),
+                entry.mask.to(record.new_logp.device).unsqueeze(0),
                 workers.clip_epsilon,
             )
             loss_entries.append(
@@ -786,6 +842,12 @@ class WorkerTrainer:
                     and val_result.mean_f1 > self.best_val_f1
                 ):
                     self.best_val_f1 = val_result.mean_f1
+                    self.best_step = step
+                    self.best_policy_state = self.policy.state_dict()
+                    torch.save(
+                        self.best_policy_state,
+                        self.stage_dir / "best_policy_state.pt",
+                    )
                     logger.info(
                         "update %d: new best val F1 %.4f",
                         step, self.best_val_f1,
@@ -808,11 +870,15 @@ class WorkerTrainer:
 
             self._write_metrics(outcome, trace_mode)
 
-        # Final test evaluation with the best checkpoint policy in place.
-        # The policy in memory is the best-val-F1 policy seen so far: best
-        # selection happened on val, and the final adapter saved at the
-        # last step carries exactly these weights.
+        # Final test evaluation uses the validation-selected policy, not
+        # merely the parameters from the final optimization step.
         if cfg.workers.final_test_eval and not trace_mode and final_outcomes:
+            if self.best_policy_state is None:
+                raise RuntimeError(
+                    "final test evaluation requested but no validation-selected "
+                    "worker checkpoint is available"
+                )
+            self.policy.load_state_dict(self.best_policy_state)
             test_result = self._evaluate("test", workers.steps)
             logger.info(
                 "final test: mean_f1=%.4f mean_em=%.4f",
@@ -824,6 +890,7 @@ class WorkerTrainer:
             "metrics_path": str(self.metrics_path),
             "updates_completed": len(final_outcomes),
             "best_val_f1": self.best_val_f1,
+            "best_step": self.best_step,
             "trace_path": (
                 str(self.stage_dir / "trace.json") if trace_mode else None
             ),

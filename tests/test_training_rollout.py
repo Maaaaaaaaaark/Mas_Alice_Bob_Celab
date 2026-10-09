@@ -75,9 +75,7 @@ class TestRollout:
         rollout, _, _ = run_rollout(
             question, prompts, workers, {question.question: MATRIX_A_ONLY}
         )
-        assert rollout.reward_matrix() == pytest.approx(
-            [[1.0, 1.0], [0.0, 0.0]]
-        )
+        assert rollout.reward_matrix() == [[1.0, 1.0], [0.0, 0.0]]
 
     def test_a_only_signal_keeps_only_a(self, question, prompts, workers):
         rollout, _, _ = run_rollout(

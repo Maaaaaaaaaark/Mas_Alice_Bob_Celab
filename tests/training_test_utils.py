@@ -155,7 +155,9 @@ def scripted_synthesizer(
     def answer_fn(question: str, a_text: str, b_text: str) -> str:
         calls.append((question, a_text, b_text))
         counts[question] = counts.get(question, 0) + 1
-        k = counts[question] - 1
+        # A question may be rolled out again on a later update.  Reuse the
+        # same deterministic G x G script for each rollout.
+        k = (counts[question] - 1) % (g * g)
         i, j = divmod(k, g)
         script = scripts.get(question)
         if script is None:

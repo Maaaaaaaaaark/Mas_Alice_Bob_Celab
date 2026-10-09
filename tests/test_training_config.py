@@ -86,6 +86,25 @@ class TestTrainingConfig:
             with pytest.raises(ValueError):
                 TrainingConfig.from_yaml(path)
 
+    def test_validation_rejects_invalid_sampling_distribution(
+        self, tmp_path: Path
+    ):
+        for override in (
+            {"top_p": 0.0},
+            {"top_p": 1.1},
+            {"do_sample": True, "temperature": 0.0},
+        ):
+            raw = base_yaml()
+            raw["prompt_dir"] = str(REPO_ROOT / "prompts_training")
+            raw["workers"]["rollout"] = {
+                "max_new_tokens": 8,
+                **override,
+            }
+            path = tmp_path / f"bad_decode_{len(list(tmp_path.iterdir()))}.yaml"
+            path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+            with pytest.raises(ValueError):
+                TrainingConfig.from_yaml(path)
+
     def test_unknown_mode_rejected(self, tmp_path: Path):
         raw = base_yaml()
         raw["prompt_dir"] = str(REPO_ROOT / "prompts_training")

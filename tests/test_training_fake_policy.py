@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 import pytest
+from types import SimpleNamespace
 
 from hotpot_mas.training.config import DecodeConfig
 from hotpot_mas.training.fake_policy import (
@@ -11,6 +12,7 @@ from hotpot_mas.training.fake_policy import (
     FakeSynthesizer,
     FakeTokenizer,
 )
+from hotpot_mas.training.policy import HFPolicy
 from tests.training_test_utils import GOLD_ANSWER, WRONG_ANSWER
 
 
@@ -45,6 +47,31 @@ class TestFakePolicy:
         assert first.token_ids == second.token_ids
         assert first.logprobs == second.logprobs
 
+
+class TestHFTeacherForcingAlignment:
+    def test_completion_tokens_are_scored_from_preceding_positions(self):
+        class PositionModel:
+            def __call__(self, input_ids):
+                length = input_ids.shape[1]
+                logits = torch.full((1, length, 8), -20.0)
+                for position in range(length):
+                    logits[0, position, (position + 1) % 8] = 20.0
+                return SimpleNamespace(logits=logits)
+
+        policy = object.__new__(HFPolicy)
+        policy.device_name = "cpu"
+        policy.model = PositionModel()
+        decode = DecodeConfig(
+            do_sample=False, temperature=0.0, top_p=1.0, max_new_tokens=2
+        )
+        # Prompt length is 2, so completion tokens are predicted by logits
+        # positions 1 and 2 respectively.
+        logps = policy.teacher_force([6, 7], [2, 3], decode)
+        assert torch.all(logps > -1e-5)
+
+
+class TestFakePolicyBehavior:
+
     def test_sampling_logprobs_match_theta(self, policy: FakePolicy):
         init = torch.linspace(0.0, 1.0, len(policy.tokenizer.vocab))
         policy.logits.data.copy_(init)
@@ -55,6 +82,19 @@ class TestFakePolicy:
         expected = torch.log_softmax(policy.logits.detach(), dim=0)
         for token, logp in zip(report.token_ids, report.logprobs):
             assert logp == pytest.approx(float(expected[token]))
+
+    def test_rollout_and_teacher_force_use_same_behavior_distribution(
+        self, policy: FakePolicy
+    ):
+        policy.logits.data.copy_(
+            torch.linspace(-1.0, 1.0, len(policy.tokenizer.vocab))
+        )
+        decode = DecodeConfig(
+            do_sample=True, temperature=0.6, top_p=0.95, max_new_tokens=6
+        )
+        report = policy.sample_report([], 19, decode)
+        rescored = policy.teacher_force([], report.token_ids, decode)
+        assert rescored.detach().tolist() == pytest.approx(report.logprobs)
 
     def test_teacher_force_has_grad(self, policy: FakePolicy):
         logp = policy.teacher_force([0, 1], [2, 3, 4])

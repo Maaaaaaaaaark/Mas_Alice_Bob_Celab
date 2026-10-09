@@ -79,7 +79,10 @@ class Policy(Protocol):
         ...
 
     def teacher_force(
-        self, input_ids: List[int], completion_ids: List[int]
+        self,
+        input_ids: List[int],
+        completion_ids: List[int],
+        decode: Optional[DecodeConfig] = None,
     ) -> Tensor:
         """Per-token log probs of ``completion_ids`` under the current
         policy, with gradients enabled. Shape ``[T]``."""
@@ -111,7 +114,26 @@ def _filter_logits_top_p(logits: Tensor, top_p: float) -> Tensor:
     remove[..., 0] = False
     filtered = sorted_logits.masked_fill(remove, float("-inf"))
     out = torch.full_like(logits, float("-inf"))
-    return out.scatter(0, sorted_indices, filtered)
+    return out.scatter(-1, sorted_indices, filtered)
+
+
+def _behavior_log_probs(logits: Tensor, decode: DecodeConfig) -> Tensor:
+    """Log probabilities of the exact distribution used for rollout.
+
+    PPO/GRPO ratios are only meaningful when the cached old log probability
+    and the re-scored new log probability describe the same distribution.
+    Therefore temperature and nucleus filtering are applied here as well as
+    in sampling.
+    """
+    adjusted = logits.float()
+    if (
+        decode.do_sample
+        and decode.temperature > 0.0
+        and decode.temperature != 1.0
+    ):
+        adjusted = adjusted / decode.temperature
+    top_p = decode.top_p if decode.do_sample else 1.0
+    return torch.log_softmax(_filter_logits_top_p(adjusted, top_p), dim=-1)
 
 
 class HFPolicy:
@@ -158,9 +180,11 @@ class HFPolicy:
             "lora_dropout": model_cfg.peft.dropout,
             "bias": "none",
         }
-        if model_cfg.peft.target_modules is not None:
-            lora_kwargs["target_modules"] = model_cfg.peft.target_modules
-        # Without target_modules, peft defaults to "all-linear".
+        lora_kwargs["target_modules"] = (
+            model_cfg.peft.target_modules
+            if model_cfg.peft.target_modules is not None
+            else "all-linear"
+        )
         self.model = get_peft_model(
             base_model, LoraConfig(task_type="CAUSAL_LM", **lora_kwargs)
         )
@@ -227,9 +251,6 @@ class HFPolicy:
         logprobs: List[float] = []
         finish_reason = "length"
 
-        temperature = decode.temperature if decode.do_sample else 1.0
-        top_p = decode.top_p if decode.do_sample else 1.0
-
         with torch.no_grad():
             for _ in range(decode.max_new_tokens):
                 step_input = input_ids if past_key_values is None else input_ids[:, -1:]
@@ -240,10 +261,7 @@ class HFPolicy:
                 )
                 past_key_values = outputs.past_key_values
                 logits = outputs.logits[0, -1].float()
-                if temperature > 0.0 and temperature != 1.0:
-                    logits = logits / temperature
-                filtered = _filter_logits_top_p(logits, top_p)
-                log_probs = torch.log_softmax(filtered, dim=-1)
+                log_probs = _behavior_log_probs(logits, decode)
                 if decode.do_sample:
                     next_id = int(torch.multinomial(log_probs.exp(), 1).item())
                 else:
@@ -290,7 +308,10 @@ class HFPolicy:
     # -- teacher forcing ------------------------------------------------
 
     def teacher_force(
-        self, input_ids: List[int], completion_ids: List[int]
+        self,
+        input_ids: List[int],
+        completion_ids: List[int],
+        decode: Optional[DecodeConfig] = None,
     ) -> Tensor:
         """Log probs of each completion token under the current policy.
 
@@ -299,17 +320,28 @@ class HFPolicy:
         """
         if not completion_ids:
             raise ValueError("completion_ids must be non-empty")
+        if not input_ids:
+            raise ValueError("input_ids must be non-empty for a causal LM")
+        decode = decode or DecodeConfig()
         full = torch.tensor(
             [input_ids + list(completion_ids)], device=self.device_name
         )
         outputs = self.model(input_ids=full)
         logits = outputs.logits[0].float()  # [L + T, V]
-        log_probs = torch.log_softmax(logits, dim=-1)
         start = len(input_ids)
+        # In a causal LM, logits at position p predict token p + 1.  The
+        # first completion token is therefore scored by the final prompt
+        # position, not by its own position.
         positions = torch.arange(
-            start, start + len(completion_ids), device=self.device_name
+            start - 1,
+            start + len(completion_ids) - 1,
+            device=self.device_name,
         )
-        return log_probs[positions, full[0, start:]]
+        behavior_log_probs = _behavior_log_probs(logits[positions], decode)
+        return behavior_log_probs[
+            torch.arange(len(completion_ids), device=self.device_name),
+            full[0, start:],
+        ]
 
     # -- checkpointing --------------------------------------------------
 

@@ -53,6 +53,12 @@ ORACLE_PARTITION_NOTE = (
 )
 
 
+def _data_config_fingerprint(cfg: TrainingConfig) -> str:
+    """Fingerprint every setting that determines the three manifests."""
+    payload = json.dumps(cfg.data.to_dict(), sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def manifest_path_for_split(cfg: TrainingConfig, split: str) -> Path:
     """Manifest file path for one of ``train``/``val``/``test``."""
     return cfg.manifest_dir / f"{split}.json"
@@ -115,6 +121,12 @@ def prepare_manifests(
     sp = splits_path(cfg)
     if sp.exists() and not force:
         loaded = load_splits(cfg.manifest_dir)
+        expected = _data_config_fingerprint(cfg)
+        if loaded.get("data_config_sha256") != expected:
+            raise RuntimeError(
+                "existing splits.json was created with a different data "
+                "configuration; rerun prepare-data with --force"
+            )
         assert_split_isolation(
             {
                 name: loaded["splits"][name]["question_ids"]
@@ -202,7 +214,8 @@ def prepare_manifests(
         sort_keys=True,
     )
     splits = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "data_config_sha256": _data_config_fingerprint(cfg),
         "dataset": cfg.data.dataset,
         "dataset_config": cfg.data.dataset_config,
         "partition_seed": cfg.data.partition_seed,

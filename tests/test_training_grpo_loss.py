@@ -62,9 +62,9 @@ class TestPerReportObjectives:
     def test_objective_averages_over_report_length(self):
         # Two reports with different lengths: each objective is its own
         # per-token mean, so a constant ratio gives the same objective.
-        logp_new = torch.tensor([[0.1, 0.1, 0.1], [0.1, 0.0]])
+        logp_new = torch.tensor([[0.1, 0.1, 0.1], [0.1, 0.1, 0.0]])
         logp_old = torch.zeros_like(logp_new)
-        mask = torch.tensor([[1.0, 1.0, 1.0], [1.0, 1.0]])
+        mask = torch.tensor([[1.0, 1.0, 1.0], [1.0, 1.0, 0.0]])
         objectives = per_report_objectives(
             logp_new, logp_old, torch.tensor([1.0, 1.0]), mask, 0.2
         )

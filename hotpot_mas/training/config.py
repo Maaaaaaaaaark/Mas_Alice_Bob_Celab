@@ -206,7 +206,7 @@ class DecodeConfig:
             do_sample=bool(raw.get("do_sample", True)),
             temperature=float(raw.get("temperature", 0.6)),
             top_p=float(raw.get("top_p", 0.95)),
-            max_new_tokens=int(raw["max_new_tokens"]),
+            max_new_tokens=int(raw.get("max_new_tokens", 256)),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -395,6 +395,12 @@ class TrainingConfig:
         ):
             if decode.max_new_tokens < 1:
                 raise ValueError(f"workers.{name}.max_new_tokens must be >= 1")
+            if not 0.0 < decode.top_p <= 1.0:
+                raise ValueError(f"workers.{name}.top_p must be in (0, 1]")
+            if decode.do_sample and decode.temperature <= 0.0:
+                raise ValueError(
+                    f"workers.{name}.temperature must be > 0 when sampling"
+                )
         for side in (self.data.train, self.data.val, self.data.test):
             if side.num_questions < 1:
                 raise ValueError(
@@ -587,4 +593,3 @@ class SynthesizerTrainingConfig:
             "sft": self.sft.to_dict(),
             "worker_checkpoint": self.worker_checkpoint,
         }
-

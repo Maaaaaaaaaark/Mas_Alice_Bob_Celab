@@ -71,15 +71,15 @@ reward evaluator (official HotpotQA token F1 as reward v1).
 | Module | Responsibility |
 |---|---|
 | `config.py` | `TrainingConfig` / `SynthesizerTrainingConfig` dataclasses, YAML loading, `modes:` deep-merge, strict validation, `stage_dir()` |
-| `data.py` | three fixed manifests + `splits.json`, split isolation asserts, pre-run split report |
+| `data.py` | three fixed manifests + `splits.json`, data-configuration fingerprint, split isolation asserts, pre-run split report |
 | `prompts_builder.py` | chat messages for A/B (role prompt + private evidence) and C (question + A report + B report); gold never included |
-| `policy.py` | `Policy` protocol; `HFPolicy` (base model + one shared peft LoRA, manual KV-cache sampling loop that records per-token logprobs without full-vocab logits); optimizer-state remap for resume |
+| `policy.py` | `Policy` protocol; `HFPolicy` (base model + one shared peft LoRA, manual KV-cache sampling loop, causally aligned teacher forcing, and matching rollout/re-score distributions); optimizer-state remap for resume |
 | `fake_policy.py` | offline test doubles: `FakePolicy` (categorical θ with real autograd), `FakeTokenizer`, `FakeSynthesizer` (scripted C that runs the real parse+F1 code) |
 | `cross_pair.py` | pure functions: R → Q_A/Q_B, population std, signal flags, normalized advantages |
 | `grpo_loss.py` | pure tensor functions: ratio, clip, per-report objective, batch J/L, approx KL, clip fraction, entropy |
 | `rollout.py` | one question end to end: G×2 sampled reports, G×G C calls (i-major), signal filtering, empty-report exclusion |
 | `eval.py` | deterministic worker evaluation (F1/EM) + per-checkpoint report cache (Stage 2 reuses identical reports, incl. empty-report control) |
-| `worker_trainer.py` | Stage 1 loop: collect N signal questions → `num_policy_epochs` × minibatched update → periodic val → best checkpoint by val F1 → `metrics.jsonl` |
+| `worker_trainer.py` | Stage 1 loop: collect N signal questions → padded variable-length minibatches → periodic val → restore the best checkpoint by val F1 for final test → `metrics.jsonl` |
 | `synthesizer_trainer.py` | **Stage 2, not yet implemented** (see §7) |
 | `trace.py` | `trace.json` recording/validation + `worked_example.md` renderer (reads trace.json only, deterministic) |
 | `cli.py` | `prepare-data`, `train-workers --mode trace|smoke|pilot|full [--resume]`, `render-trace` |
@@ -155,11 +155,9 @@ exist; `synthesizer_trainer.py`, `configs/synthesizer_sft.yaml` and the
 
 ## 8. Known limitations
 
-- The development machine has no local Python environment and no model
-  downloads: all code in this experiment was delivered **statically
-  reviewed**; the pytest suite and the real-model trace/smoke runs must be
-  executed on the cluster with the commands above. Treat the cluster test
-  results as the verification gate for Stage 1 before starting Stage 2.
+- The complete CPU-only test suite passes locally. A real Gemma trace/smoke
+  run still requires the GPU cluster and remains the verification gate for
+  model loading, PEFT integration, CUDA placement, and GPU memory use.
 - `cross_paired_grpo.pdf` was not diffed word by word (no poppler locally);
   the TeX is authoritative.
 - The worker partition is oracle-balanced from gold supporting metadata —

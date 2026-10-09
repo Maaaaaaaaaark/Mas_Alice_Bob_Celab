@@ -110,7 +110,8 @@ class TestPartition:
             joined = " ".join(m["content"] for m in messages).lower()
             assert "supporting" not in joined
             assert "is_supporting" not in joined
-            assert "distractor" not in joined
+            # Ordinary document prose may itself contain words such as
+            # "distractor"; only hidden metadata labels must be absent.
 
 
 class TestSplitIsolation:
@@ -185,6 +186,20 @@ class TestSplitIsolation:
             )["splits"]["train"]["question_ids"]
             == load_splits(manifests_dir)["splits"]["train"]["question_ids"]
         )
+
+    def test_prepare_rejects_stale_manifest_configuration(
+        self, prepared, rows, monkeypatch
+    ):
+        tmp_path = Path(prepared["train"]).parent.parent
+        monkeypatch.setattr(
+            training_data,
+            "load_hotpotqa_validation",
+            lambda **kwargs: rows,
+        )
+        changed = make_training_config(tmp_path)
+        changed.data.partition_seed = 99
+        with pytest.raises(RuntimeError, match="different data configuration"):
+            prepare_manifests(changed)
 
     def test_describe_split_reports_sources(self, tmp_path: Path):
         cfg = make_training_config(tmp_path)

@@ -1,0 +1,353 @@
+% =====================================================================
+% Algorithm 1: cross-paired GRPO-style training of workers A/B (frozen C)
+% Algorithm 2: supervised fine-tuning of synthesizer C (frozen A/B)
+% Standalone preview. To use in a paper, copy everything between
+% "BEGIN PAPER CONTENT" and "END PAPER CONTENT". The preamble needs the
+% packages amsmath, amssymb, algorithm, algpseudocode and the three
+% \DeclareMathOperator lines below.
+% =====================================================================
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\algrenewcommand\algorithmicrequire{\textbf{Input:}}
+\algrenewcommand\algorithmicensure{\textbf{Output:}}
+\DeclareMathOperator{\mean}{mean}
+\DeclareMathOperator{\stdev}{std}
+\DeclareMathOperator{\clip}{clip}
+
+\begin{document}
+
+% ======================= BEGIN PAPER CONTENT =========================
+\section*{Training Workers against a Frozen Synthesizer}
+
+\paragraph{Materials and splits.}
+Each question $q$ has a gold answer $y^\star$ and a pool of documents.
+Before any training, the pool is split once into two private document sets
+$c_A$ and $c_B$, and the split is stored. Algorithms~\ref{alg:cross-grpo}
+and~\ref{alg:sft-c} and all evaluations use this same stored split. In our
+HotpotQA setting each question has ten documents: $c_A$ contains one
+supporting document and four distractors, and $c_B$ contains the other
+supporting document and four distractors. The workers are not told which
+document is supporting, and the order within each set is shuffled.
+Questions are divided into training, validation and test sets
+$\mathcal{D}_{\mathrm{train}}$, $\mathcal{D}_{\mathrm{val}}$ and
+$\mathcal{D}_{\mathrm{test}}$. Validation and test questions are never used
+to train the workers or the synthesizer.
+
+\paragraph{Agents.}
+Both workers share one policy $\pi_\theta$ (LoRA parameters $\theta$ on a
+base model $M$) and differ only in their input
+$x_A = \textsc{Prompt}(q, c_A)$ and $x_B = \textsc{Prompt}(q, c_B)$.
+In this stage the synthesizer $C$ is the frozen base model $M$; it decodes
+greedily, so it acts as a deterministic part of the reward.
+
+\paragraph{Evaluation protocol.}
+$\textsc{Evaluate}(\theta, C', \mathcal{D})$ (Algorithm~\ref{alg:eval})
+decodes both workers with the
+deterministic setting $\textsc{Decode}_{\mathrm{eval}}$, lets the synthesizer
+$C'$ answer from the two reports, and returns the average F1 and exact match
+(EM) against $y^\star$, together with the average number of tokens generated
+by A, B and $C'$. Reports are cached per worker checkpoint and data set, so
+different synthesizers are compared on identical reports, prompts and
+decoding settings. The variant $\textsc{Evaluate}_{\varnothing}$ replaces
+both reports with empty strings. Checkpoints are selected by validation F1,
+and test results are computed once at the end.
+
+\paragraph{Cross-paired reward.}
+For each question, A and B each sample $G$ reports from the policy used
+for data collection:
+\[
+  a_1, \dots, a_G \sim \pi_{\theta_{\mathrm{old}}}(\cdot \mid x_A),
+  \qquad
+  b_1, \dots, b_G \sim \pi_{\theta_{\mathrm{old}}}(\cdot \mid x_B).
+\]
+Every pair is answered by $C$ and scored against the gold answer:
+\begin{equation}
+  R_{ij} = \mathrm{F1}\big(C(q, a_i, b_j),\; y^\star\big),
+  \qquad i, j \in \{1, \dots, G\}.
+  \label{eq:reward}
+\end{equation}
+
+\paragraph{Advantages.}
+Each report is evaluated by its average reward over multiple partner
+reports, which reduces the dependence of its evaluation on any single
+partner:
+\begin{equation}
+  Q_A(i) = \frac{1}{G}\sum_{j=1}^{G} R_{ij},
+  \qquad
+  Q_B(j) = \frac{1}{G}\sum_{i=1}^{G} R_{ij}.
+  \label{eq:marginal}
+\end{equation}
+Averaging does not remove this dependence: if all of B's reports lack
+necessary information, a good report from A can still receive low rewards.
+A side carries a learning signal only if its marginal scores vary:
+\begin{equation}
+  s_A = \mathbf{1}\big[\stdev_k Q_A(k) > \delta\big],
+  \qquad
+  s_B = \mathbf{1}\big[\stdev_k Q_B(k) > \delta\big].
+  \label{eq:signal}
+\end{equation}
+For each side with signal, advantages are normalized within its group of
+$G$ reports:
+\begin{equation}
+  \mathrm{Adv}_A(i) = \frac{Q_A(i) - \mean_k Q_A(k)}{\stdev_k Q_A(k) + \epsilon_{\mathrm{n}}},
+  \qquad
+  \mathrm{Adv}_B(j) = \frac{Q_B(j) - \mean_k Q_B(k)}{\stdev_k Q_B(k) + \epsilon_{\mathrm{n}}}.
+  \label{eq:adv}
+\end{equation}
+A question is used for training as soon as \emph{at least one} side has
+signal ($s_A \vee s_B$); only the side(s) with signal contribute reports.
+A question with $s_A = s_B = 0$ contributes no policy gradient, so it is
+discarded and another question is sampled in its place. This also covers the
+case where $R$ varies but neither marginal does, e.g.\
+$R = \bigl(\begin{smallmatrix} 1 & 0 \\ 0 & 1 \end{smallmatrix}\bigr)$:
+success depends on the specific pairing, and no report is better on average.
+
+\paragraph{Objective.}
+For a report $o = (o_1, \dots, o_{|o|})$ generated from input $x$ with
+advantage $u$, the token-level probability ratio and objective are
+\begin{equation}
+  \rho_t(\theta) =
+  \frac{\pi_\theta(o_t \mid x, o_{<t})}{\pi_{\theta_{\mathrm{old}}}(o_t \mid x, o_{<t})},
+  \label{eq:ratio}
+\end{equation}
+\begin{equation}
+  \ell_t(\theta; x, o, u) =
+  \min\!\Big(\rho_t(\theta)\,u,\;
+  \clip\big(\rho_t(\theta), 1-\epsilon, 1+\epsilon\big)\,u\Big).
+  \label{eq:token}
+\end{equation}
+We use no KL penalty to a reference policy; the clipped ratio alone limits
+how far each update moves the policy.
+For each question $q$, the training set keeps only the reports of sides
+with signal, each with its input and advantage:
+\begin{equation}
+  \mathcal{S}_q =
+  \underbrace{\{(x_A, a_i, \mathrm{Adv}_A(i))\}_{i=1}^{G}}_{\text{if } s_A = 1}
+  \;\cup\;
+  \underbrace{\{(x_B, b_j, \mathrm{Adv}_B(j))\}_{j=1}^{G}}_{\text{if } s_B = 1},
+  \qquad |\mathcal{S}_q| \in \{G, 2G\}.
+  \label{eq:set}
+\end{equation}
+Each element $(x, o, u) \in \mathcal{S}_q$ carries its own advantage:
+$u = \mathrm{Adv}_A(i)$ for A's reports and $u = \mathrm{Adv}_B(j)$ for B's
+reports. The objective averages over all reports in $\mathcal{S}_q$,
+from both sides, for every question in the update batch $\mathcal{Q}$
+($|\mathcal{Q}| = N$ questions with signal), and the loss is its negative:
+\begin{equation}
+  \mathcal{J}(\theta) =
+  \frac{1}{|\mathcal{Q}|}\sum_{q \in \mathcal{Q}}
+  \frac{1}{|\mathcal{S}_q|}
+  \sum_{(x, o, u) \in \mathcal{S}_q}
+  \frac{1}{|o|}\sum_{t=1}^{|o|} \ell_t(\theta; x, o, u),
+  \label{eq:objective}
+\end{equation}
+\begin{equation}
+  \mathcal{L}(\theta) = -\mathcal{J}(\theta).
+  \label{eq:loss}
+\end{equation}
+Only report tokens enter the loss: prompt and document tokens are
+conditioning only, and $C$ receives no gradient. Tokens of A's reports use
+$\mathrm{Adv}_A(i)$, tokens of B's reports use $\mathrm{Adv}_B(j)$, and both
+update the shared parameters $\theta$. The factor $1/|\mathcal{S}_q|$
+averages over the reports retained for question $q$: when only one side has
+signal, the question contributes the mean over that side's $G$ reports,
+whereas keeping the other side's zero-advantage reports in the average would
+halve this contribution. Because A and B share $\theta$, an update computed
+from one side's reports also changes the policy used by the other side.
+
+\begin{algorithm}[htbp]
+\caption{Cross-paired GRPO-style training of the workers against a frozen synthesizer}
+\label{alg:cross-grpo}
+\begin{algorithmic}[1]
+\Require $\mathcal{D}_{\mathrm{train}}$, $\mathcal{D}_{\mathrm{val}}$ with
+  stored splits $(q, y^\star, c_A, c_B)$; base model $M$; worker LoRA
+  parameters $\theta$; group size $G$; questions with signal per update $N$;
+  clip range $\epsilon$; threshold $\delta$; learning rate $\eta$; steps $T$;
+  evaluation interval $K$
+\Ensure worker parameters $\theta^\star$ with the best validation F1
+\State $C \gets M$
+  \Comment{frozen; $C$ decodes greedily}
+\State $\theta^\star \gets \theta$; \; $f^\star \gets -\infty$
+\For{$t = 1, \dots, T$}
+  \State $\pi_{\theta_{\mathrm{old}}} \gets \pi_\theta$; \; $\mathcal{S} \gets \emptyset$; \; $n \gets 0$
+    \Comment{$n$: questions with signal so far}
+  \While{$n < N$} \Comment{collect $N$ questions with signal}
+    \State Sample $(q, y^\star, c_A, c_B) \sim \mathcal{D}_{\mathrm{train}}$
+      \Comment{stored split}
+    \State $x_A \gets \textsc{Prompt}(q, c_A)$; \;
+      $x_B \gets \textsc{Prompt}(q, c_B)$
+    \State Sample $a_1, \dots, a_G \sim \pi_{\theta_{\mathrm{old}}}(\cdot \mid x_A)$
+    \State Sample $b_1, \dots, b_G \sim \pi_{\theta_{\mathrm{old}}}(\cdot \mid x_B)$
+    \For{$i = 1, \dots, G$; $j = 1, \dots, G$}
+      \Comment{$G^2$ calls to $C$}
+      \State $R_{ij} \gets \mathrm{F1}\big(C(q, a_i, b_j),\, y^\star\big)$
+        \Comment{Eq.~\eqref{eq:reward}}
+    \EndFor
+    \State $Q_A(i) \gets \frac{1}{G}\sum_{j} R_{ij}$; \;
+      $Q_B(j) \gets \frac{1}{G}\sum_{i} R_{ij}$
+      \Comment{Eq.~\eqref{eq:marginal}}
+    \State $s_A \gets \stdev(Q_A) > \delta$; \;
+      $s_B \gets \stdev(Q_B) > \delta$
+      \Comment{Eq.~\eqref{eq:signal}}
+    \If{$s_A \vee s_B$} \Comment{one side with signal is enough}
+      \State $\mathcal{S}_q \gets \emptyset$
+      \If{$s_A$}
+        \State $\big(\mathrm{Adv}_A(1), \dots, \mathrm{Adv}_A(G)\big) \gets \Call{Norm}{Q_A}$
+          \Comment{Eq.~\eqref{eq:adv}}
+        \State $\mathcal{S}_q \gets \mathcal{S}_q \cup \{(x_A, a_i, \mathrm{Adv}_A(i))\}_{i=1}^{G}$
+      \EndIf
+      \If{$s_B$}
+        \State $\big(\mathrm{Adv}_B(1), \dots, \mathrm{Adv}_B(G)\big) \gets \Call{Norm}{Q_B}$
+        \State $\mathcal{S}_q \gets \mathcal{S}_q \cup \{(x_B, b_j, \mathrm{Adv}_B(j))\}_{j=1}^{G}$
+      \EndIf
+      \State $\mathcal{S} \gets \mathcal{S} \cup \{\mathcal{S}_q\}$
+        \Comment{Eq.~\eqref{eq:set}}
+      \State $n \gets n + 1$ \Comment{counts once, one side or both}
+    \Else
+      \State discard $q$ \Comment{no signal on either side}
+    \EndIf
+  \EndWhile
+  \State $\theta \gets \theta - \eta\, \nabla_\theta \mathcal{L}(\theta; \mathcal{S})$
+    \Comment{Eqs.~\eqref{eq:objective}--\eqref{eq:loss}, report tokens only}
+  \If{$t \bmod K = 0$} \Comment{checkpoint selection on validation}
+    \State $f \gets$ F1 returned by $\Call{Evaluate}{\theta, C, \mathcal{D}_{\mathrm{val}}}$
+    \If{$f > f^\star$}
+      \State $f^\star \gets f$; \; $\theta^\star \gets \theta$
+    \EndIf
+  \EndIf
+\EndFor
+\State \Return $\theta^\star$
+\Statex
+\Function{Norm}{$v \in \mathbb{R}^{G}$}
+  \State \Return $\big(v - \mean(v)\big) / \big(\stdev(v) + \epsilon_{\mathrm{n}}\big)$
+\EndFunction
+\end{algorithmic}
+\end{algorithm}
+
+\section*{Training the Synthesizer against Frozen Workers}
+
+\paragraph{Setup.}
+The workers are frozen at the parameters $\theta^\star$ selected on
+$\mathcal{D}_{\mathrm{val}}$ by Algorithm~\ref{alg:cross-grpo}. The
+synthesizer receives its own LoRA parameters $\phi$ on the same base model
+$M$; we write $C_\phi$ for the trained synthesizer and $C_0 = M$ for the
+original one. Only $\phi$ is updated.
+
+\paragraph{Data.}
+For every training question, the frozen workers produce one report pair on
+the stored split, with the same decoding setting used at evaluation:
+\[
+  a = \textsc{Decode}_{\mathrm{eval}}\big(\pi_{\theta^\star}, x_A\big),
+  \qquad
+  b = \textsc{Decode}_{\mathrm{eval}}\big(\pi_{\theta^\star}, x_B\big).
+\]
+Each question contributes one example $(q, a, b, y^\star)$ to the dataset
+$\mathcal{D}_C$; the target is the gold answer only.
+
+\paragraph{Objective.}
+$C_\phi$ is trained with supervised fine-tuning. The loss is computed on the
+answer tokens only; the question and both reports are conditioning:
+\begin{equation}
+  \mathcal{L}_{\mathrm{SFT}}(\phi) =
+  -\frac{1}{|\mathcal{D}_C|}
+  \sum_{(q, a, b, y^\star) \in \mathcal{D}_C}
+  \frac{1}{|y^\star|}
+  \sum_{t=1}^{|y^\star|}
+  \log C_\phi\big(y^\star_t \mid q, a, b, y^\star_{<t}\big).
+  \label{eq:sft}
+\end{equation}
+
+\paragraph{Evaluation.}
+The checkpoint $\phi^\star$ is selected by validation F1. On the test set,
+$C_0$ and $C_{\phi^\star}$ are compared on identical cached reports
+$(a_q, b_q)$, prompts and decoding settings, with the reports and with both
+reports replaced by empty strings:
+\begin{align}
+  \mathrm{F1}_{\mathrm{rep}}(C') &=
+  \frac{1}{|\mathcal{D}_{\mathrm{test}}|}\sum_{q \in \mathcal{D}_{\mathrm{test}}}
+  \mathrm{F1}\big(C'(q, a_q, b_q),\, y^\star_q\big),
+  \label{eq:eval}\\
+  \mathrm{F1}_{\mathrm{empty}}(C') &=
+  \frac{1}{|\mathcal{D}_{\mathrm{test}}|}\sum_{q \in \mathcal{D}_{\mathrm{test}}}
+  \mathrm{F1}\big(C'(q, \varnothing, \varnothing),\, y^\star_q\big),
+  \label{eq:eval-empty}
+\end{align}
+for $C' \in \{C_0, C_{\phi^\star}\}$. EM is defined analogously, and we also
+report the average number of tokens generated by A, B and $C'$. A larger
+gain in $\mathrm{F1}_{\mathrm{rep}}$ than in $\mathrm{F1}_{\mathrm{empty}}$
+is consistent with better use of the reports, but does not by itself
+establish this explanation: changes in output format, adaptation to the
+task, or the use of prior knowledge can also raise
+$\mathrm{F1}_{\mathrm{empty}}$.
+
+\begin{algorithm}[htbp]
+\caption{Supervised fine-tuning of the synthesizer with frozen workers}
+\label{alg:sft-c}
+\begin{algorithmic}[1]
+\Require $\mathcal{D}_{\mathrm{train}}$, $\mathcal{D}_{\mathrm{val}}$,
+  $\mathcal{D}_{\mathrm{test}}$ with stored splits $(q, y^\star, c_A, c_B)$,
+  where $y^\star$ is the gold answer; frozen worker parameters $\theta^\star$
+  from Algorithm~\ref{alg:cross-grpo}; base model $M$; synthesizer LoRA
+  parameters $\phi$; learning rate $\eta$; epochs $E$
+\Ensure synthesizer parameters $\phi^\star$ with the best validation F1;
+  test results of $C_0$ and $C_{\phi^\star}$ with and without reports
+\State $C_0 \gets M$ \Comment{original synthesizer, kept for comparison}
+\Statex \textit{Build the SFT data}
+\State $\mathcal{D}_C \gets \emptyset$
+\For{each $(q, y^\star, c_A, c_B) \in \mathcal{D}_{\mathrm{train}}$}
+  \Comment{stored split}
+  \State $a \gets \textsc{Decode}_{\mathrm{eval}}(\pi_{\theta^\star}, \textsc{Prompt}(q, c_A))$
+    \Comment{same setting as evaluation}
+  \State $b \gets \textsc{Decode}_{\mathrm{eval}}(\pi_{\theta^\star}, \textsc{Prompt}(q, c_B))$
+  \State $\mathcal{D}_C \gets \mathcal{D}_C \cup \{(q, a, b, y^\star)\}$
+    \Comment{target: gold answer $y^\star$}
+\EndFor
+\Statex \textit{Train only the synthesizer, select on validation}
+\State $\phi^\star \gets \phi$; \; $f^\star \gets -\infty$
+\For{$e = 1, \dots, E$}
+  \For{each minibatch $\mathcal{U} \subset \mathcal{D}_C$}
+    \State $\phi \gets \phi - \eta\, \nabla_\phi \mathcal{L}_{\mathrm{SFT}}(\phi; \mathcal{U})$
+      \Comment{Eq.~\eqref{eq:sft}, answer tokens only}
+  \EndFor
+  \State $f \gets$ F1 returned by $\Call{Evaluate}{\theta^\star, C_\phi, \mathcal{D}_{\mathrm{val}}}$
+  \If{$f > f^\star$}
+    \State $f^\star \gets f$; \; $\phi^\star \gets \phi$
+  \EndIf
+\EndFor
+\Statex \textit{Final comparison on held-out test questions}
+\For{$C' \in \{C_0, C_{\phi^\star}\}$}
+  \Comment{identical cached reports}
+  \State $\Call{Evaluate}{\theta^\star, C', \mathcal{D}_{\mathrm{test}}}$; \;
+    $\textsc{Evaluate}_{\varnothing}(\theta^\star, C', \mathcal{D}_{\mathrm{test}})$
+    \Comment{Eqs.~\eqref{eq:eval}--\eqref{eq:eval-empty}}
+\EndFor
+\State \Return $\phi^\star$ and the four test results (F1, EM, tokens)
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[htbp]
+\caption{Evaluation procedure shared by Algorithms~\ref{alg:cross-grpo} and~\ref{alg:sft-c}}
+\label{alg:eval}
+\begin{algorithmic}[1]
+\Function{Evaluate}{$\theta, C', \mathcal{D}$}
+  \For{each $(q, y^\star, c_A, c_B) \in \mathcal{D}$}
+    \Comment{stored split}
+    \State $a \gets \textsc{Decode}_{\mathrm{eval}}(\pi_\theta, \textsc{Prompt}(q, c_A))$
+      \Comment{reports cached per $(\theta, \mathcal{D})$}
+    \State $b \gets \textsc{Decode}_{\mathrm{eval}}(\pi_\theta, \textsc{Prompt}(q, c_B))$
+    \State $\hat{y} \gets C'(q, a, b)$
+      \Comment{$C'(q, \varnothing, \varnothing)$ in $\textsc{Evaluate}_{\varnothing}$}
+    \State Record $\mathrm{F1}(\hat{y}, y^\star)$, $\mathrm{EM}(\hat{y}, y^\star)$,
+      $|a|$, $|b|$, $|\hat{y}|$
+  \EndFor
+  \State \Return averages: F1, EM, tokens generated by A, B and $C'$
+\EndFunction
+\end{algorithmic}
+\end{algorithm}
+% ======================== END PAPER CONTENT ==========================
+
+\end{document}

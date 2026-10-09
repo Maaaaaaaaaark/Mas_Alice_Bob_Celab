@@ -145,6 +145,16 @@ class WorkerTrainer:
         self.mode = mode
         self.stage_dir = cfg.stage_dir()
         self.stage_dir.mkdir(parents=True, exist_ok=True)
+        existing_run_artifacts = [
+            self.stage_dir / "metrics.jsonl",
+            self.stage_dir / "trace.json",
+        ] + list(self.stage_dir.glob("step_*"))
+        if not resume and any(path.exists() for path in existing_run_artifacts):
+            raise RuntimeError(
+                f"run artifacts already exist in {self.stage_dir}; move or "
+                "remove that run directory before starting a fresh run, or "
+                "use --resume"
+            )
         self.environment = collect_environment_info()
 
         seed_all(cfg.seed)
@@ -387,6 +397,16 @@ class WorkerTrainer:
             mask_t = (positions < lengths.unsqueeze(1)).to(dtype=dtype)
             adv_t = torch.tensor(advantages, device=device, dtype=dtype)
             weight_t = torch.tensor(weights, device=device, dtype=dtype)
+            active = mask_t.bool()
+            if not torch.isfinite(stacked_old[active]).all():
+                raise FloatingPointError(
+                    "rollout log probabilities contain non-finite values"
+                )
+            if not torch.isfinite(stacked_new[active]).all():
+                raise FloatingPointError(
+                    "teacher-forced log probabilities contain non-finite "
+                    "values; GRPO worker rollouts require top_p=1.0"
+                )
             objectives = per_report_objectives(
                 stacked_new,
                 stacked_old,
@@ -862,9 +882,8 @@ class WorkerTrainer:
                 trace_data = self._assemble_trace(outcome)
                 trace_path = self.stage_dir / "trace.json"
                 write_trace_json(trace_path, trace_data)
-                worked_path = render_worked_example(
-                    trace_path, self.stage_dir / "worked_example.md"
-                )
+                worked_path = self.stage_dir / "worked_example.md"
+                render_worked_example(trace_path, worked_path)
                 logger.info(
                     "trace written: %s and %s", trace_path, worked_path
                 )

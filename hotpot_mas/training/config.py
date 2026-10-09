@@ -197,7 +197,7 @@ class DecodeConfig:
 
     do_sample: bool = True
     temperature: float = 0.6
-    top_p: float = 0.95
+    top_p: float = 1.0
     max_new_tokens: int = 256
 
     @classmethod
@@ -205,7 +205,7 @@ class DecodeConfig:
         return cls(
             do_sample=bool(raw.get("do_sample", True)),
             temperature=float(raw.get("temperature", 0.6)),
-            top_p=float(raw.get("top_p", 0.95)),
+            top_p=float(raw.get("top_p", 1.0)),
             max_new_tokens=int(raw.get("max_new_tokens", 256)),
         )
 
@@ -401,6 +401,12 @@ class TrainingConfig:
                 raise ValueError(
                     f"workers.{name}.temperature must be > 0 when sampling"
                 )
+        if w.rollout.top_p != 1.0:
+            raise ValueError(
+                "workers.rollout.top_p must be 1.0 for GRPO so every "
+                "sampled report token remains in the updated policy's "
+                "probability support"
+            )
         for side in (self.data.train, self.data.val, self.data.test):
             if side.num_questions < 1:
                 raise ValueError(

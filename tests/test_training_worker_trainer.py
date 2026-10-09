@@ -265,6 +265,19 @@ class TestEndToEndUpdate:
 
 
 class TestCheckpointAndResume:
+    def test_fresh_run_refuses_to_mix_with_existing_artifacts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        rows = make_rows(8)
+        trainer = make_prepared_trainer(
+            tmp_path, rows, monkeypatch, all_both_scripts(rows)
+        )
+        trainer.train()
+        with pytest.raises(RuntimeError, match="run artifacts already exist"):
+            make_prepared_trainer(
+                tmp_path, rows, monkeypatch, all_both_scripts(rows)
+            )
+
     def test_final_test_restores_best_validation_policy(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):

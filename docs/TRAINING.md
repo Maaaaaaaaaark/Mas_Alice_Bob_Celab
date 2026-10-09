@@ -32,6 +32,7 @@ These were agreed with the requirements rather than chosen silently:
 | Policy epochs per rollout batch | one update | `num_policy_epochs` configurable, **default 1 (= TeX-exact)** | with 1 epoch the ratio is always 1.0 and clipping can never be observed; epochs > 1 (trace mode uses 2) let the clip fraction be measured |
 | No-signal guard | not specified | `max_sampling_attempts` bounds the question re-sampling per update (default 100); a starved update is skipped and recorded | prevents an endless loop when no question signals |
 | Zero-length reports | not specified | still scored by C on all G×G pairs (they are legitimate evaluation inputs), but excluded from S_q / the token loss and recorded under `excluded_empty_reports` | a zero-token report has no tokens to carry a gradient |
+| Worker nucleus sampling | not specified | worker rollout requires `top_p=1.0`; temperature sampling remains enabled | a changing top-p support can assign zero probability to an old report token after an update, producing `-inf` log probabilities and infinite KL diagnostics |
 
 Everything else follows the TeX exactly: G×G frozen-C calls per question,
 row/column marginal rewards, per-side signal test `std(Q_side) > δ`

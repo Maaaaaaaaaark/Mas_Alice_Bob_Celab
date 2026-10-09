@@ -393,7 +393,10 @@ def render_worked_example(
     add(f"- approx KL (mean old_logp − new_logp over report tokens): "
         f"{_f(d['approx_kl'])}")
     add(f"- clip fraction (tokens with |ρ − 1| > ε): {_f(d['clip_fraction'])}")
-    add(f"- mean entropy over report tokens: {_f(d['entropy'])}")
+    add(
+        "- mean sampled-token surprisal (entropy estimate): "
+        f"{_f(d['entropy'])}"
+    )
     add("")
     ckpt = t["checkpoint"]
     add(f"- checkpoint path: `{ckpt['path']}` (saved: {ckpt['saved']})")

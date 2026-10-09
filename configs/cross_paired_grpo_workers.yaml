@@ -68,7 +68,7 @@ workers:
   rollout:
     do_sample: true
     temperature: 0.6
-    top_p: 0.95
+    top_p: 1.0                    # full support keeps GRPO ratios finite
     max_new_tokens: 256
   eval_decode:
     do_sample: false

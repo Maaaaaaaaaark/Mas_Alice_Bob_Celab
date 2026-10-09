@@ -105,6 +105,22 @@ class TestTrainingConfig:
             with pytest.raises(ValueError):
                 TrainingConfig.from_yaml(path)
 
+    def test_grpo_rollout_rejects_truncated_probability_support(
+        self, tmp_path: Path
+    ):
+        raw = base_yaml()
+        raw["prompt_dir"] = str(REPO_ROOT / "prompts_training")
+        raw["workers"]["rollout"] = {
+            "do_sample": True,
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "max_new_tokens": 8,
+        }
+        path = tmp_path / "truncated_support.yaml"
+        path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+        with pytest.raises(ValueError, match="probability support"):
+            TrainingConfig.from_yaml(path)
+
     def test_unknown_mode_rejected(self, tmp_path: Path):
         raw = base_yaml()
         raw["prompt_dir"] = str(REPO_ROOT / "prompts_training")

@@ -33,6 +33,7 @@ python -m pip install \
   'pyyaml>=6.0,<7' \
   'tqdm>=4.66,<5' \
   'numpy>=1.26,<3' \
+  'peft>=0.12,<1' \
   'pytest>=8.0,<10'
 
 cd "$REPO_DIR"

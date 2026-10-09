@@ -77,6 +77,7 @@ def rollout_question(
     prompts: TrainingPrompts,
     workers: WorkerTrainingConfig,
     base_seed: int,
+    rollout_index: int = 0,
 ) -> QuestionRollout:
     """Sample and score one question end to end."""
     worker_messages = {
@@ -92,7 +93,9 @@ def rollout_question(
         side_reports: List[RolloutReport] = []
         for index in range(workers.G):
             generation_seed = derive_generation_seed(
-                base_seed, f"{question.question_id}:{side}", index
+                base_seed,
+                f"{question.question_id}:{side}:rollout-{rollout_index}",
+                index,
             )
             report = policy.sample_report(
                 worker_messages[side], generation_seed, workers.rollout

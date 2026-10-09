@@ -299,6 +299,7 @@ class WorkerTrainer:
                 self.prompts,
                 workers,
                 self.cfg.seed,
+                rollout_index=self.q_pointer - 1,
             )
             if rollout.has_signal:
                 rollouts.append(rollout)

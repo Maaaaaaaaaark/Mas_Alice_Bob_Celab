@@ -138,6 +138,43 @@ class TestRollout:
         assert first.reward_matrix() == second.reward_matrix()
         assert first.signal.kept_sides == second.signal.kept_sides
 
+    def test_resampling_same_question_uses_fresh_deterministic_seeds(
+        self, question, prompts, workers
+    ):
+        synth1, _ = scripted_synthesizer(
+            {question.question: MATRIX_BOTH}, workers.G
+        )
+        synth2, _ = scripted_synthesizer(
+            {question.question: MATRIX_BOTH}, workers.G
+        )
+        first = rollout_question(
+            question,
+            FakePolicy(),
+            synth1,
+            prompts,
+            workers,
+            base_seed=0,
+            rollout_index=3,
+        )
+        second = rollout_question(
+            question,
+            FakePolicy(),
+            synth2,
+            prompts,
+            workers,
+            base_seed=0,
+            rollout_index=4,
+        )
+        first_seeds = [
+            report.generation_seed
+            for report in first.a_reports + first.b_reports
+        ]
+        second_seeds = [
+            report.generation_seed
+            for report in second.a_reports + second.b_reports
+        ]
+        assert first_seeds != second_seeds
+
     def test_gold_answer_never_enters_inputs(self, question, prompts, workers):
         rollout, _, calls = run_rollout(
             question, prompts, workers, {question.question: MATRIX_NONE}

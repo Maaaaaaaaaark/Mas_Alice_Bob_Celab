@@ -33,7 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 
 from hotpot_mas.hotpotqa import load_hotpotqa_validation
 from hotpot_mas.question_selection import (
@@ -42,7 +42,7 @@ from hotpot_mas.question_selection import (
     load_manifest,
 )
 
-from .config import TrainingConfig
+from .config import SynthesizerTrainingConfig, TrainingConfig
 
 SPLITS_FILENAME = "splits.json"
 
@@ -53,22 +53,30 @@ ORACLE_PARTITION_NOTE = (
 )
 
 
-def _data_config_fingerprint(cfg: TrainingConfig) -> str:
+def _data_config_fingerprint(
+    cfg: Union[TrainingConfig, SynthesizerTrainingConfig]
+) -> str:
     """Fingerprint every setting that determines the three manifests."""
     payload = json.dumps(cfg.data.to_dict(), sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def manifest_path_for_split(cfg: TrainingConfig, split: str) -> Path:
+def manifest_path_for_split(
+    cfg: Union[TrainingConfig, SynthesizerTrainingConfig], split: str
+) -> Path:
     """Manifest file path for one of ``train``/``val``/``test``."""
     return cfg.manifest_dir / f"{split}.json"
 
 
-def splits_path(cfg: TrainingConfig) -> Path:
+def splits_path(
+    cfg: Union[TrainingConfig, SynthesizerTrainingConfig]
+) -> Path:
     return cfg.manifest_dir / SPLITS_FILENAME
 
 
-def _source_rows(cfg: TrainingConfig) -> Dict[str, List[Dict[str, Any]]]:
+def _source_rows(
+    cfg: Union[TrainingConfig, SynthesizerTrainingConfig]
+) -> Dict[str, List[Dict[str, Any]]]:
     """Load each distinct official source split at most once."""
     rows_by_split: Dict[str, List[Dict[str, Any]]] = {}
     for split_name in {
@@ -109,7 +117,8 @@ def assert_split_isolation(
 
 
 def prepare_manifests(
-    cfg: TrainingConfig, force: bool = False
+    cfg: Union[TrainingConfig, SynthesizerTrainingConfig],
+    force: bool = False,
 ) -> Dict[str, Path]:
     """Build (or reuse) the three split manifests and ``splits.json``.
 
@@ -280,7 +289,7 @@ def load_splits(manifest_dir: Path) -> Dict[str, Any]:
 
 
 def load_questions_for_split(
-    cfg: TrainingConfig, split: str
+    cfg: Union[TrainingConfig, SynthesizerTrainingConfig], split: str
 ) -> List[SelectedQuestion]:
     """Load one split's selected questions from its manifest."""
     if split not in ("train", "val", "test"):
@@ -288,7 +297,9 @@ def load_questions_for_split(
     return load_manifest(manifest_path_for_split(cfg, split))
 
 
-def describe_split(cfg: TrainingConfig) -> str:
+def describe_split(
+    cfg: Union[TrainingConfig, SynthesizerTrainingConfig]
+) -> str:
     """Human-readable split report, printed before every training run."""
     lines = [
         "Data split configuration:",

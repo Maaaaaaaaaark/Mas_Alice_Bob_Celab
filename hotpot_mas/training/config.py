@@ -455,12 +455,23 @@ class TrainingConfig:
 
 @dataclass
 class SFTConfig:
-    """Stage 2 SFT hyperparameters (Algorithm 2 of cross_paired_grpo.tex)."""
+    """Stage 2 SFT hyperparameters (Algorithm 2 of cross_paired_grpo.tex).
+
+    ``worker_eval_decode`` is the deterministic worker decode used to
+    produce the cached A/B reports (it must match Stage 1's
+    ``workers.eval_decode`` so the reports come from the same evaluation
+    setting); ``synthesizer_decode`` is C's own greedy evaluation decode.
+    """
 
     num_epochs: int = 3
     learning_rate: float = 1e-4
     weight_decay: float = 0.0
     batch_size: int = 4  # D_C examples per gradient-accumulation chunk
+    worker_eval_decode: DecodeConfig = field(
+        default_factory=lambda: DecodeConfig(
+            do_sample=False, temperature=0.0, top_p=1.0, max_new_tokens=256
+        )
+    )
     synthesizer_decode: DecodeConfig = field(
         default_factory=lambda: DecodeConfig(
             do_sample=False, temperature=0.0, top_p=1.0, max_new_tokens=64
@@ -474,6 +485,9 @@ class SFTConfig:
             learning_rate=float(raw.get("learning_rate", 1e-4)),
             weight_decay=float(raw.get("weight_decay", 0.0)),
             batch_size=int(raw.get("batch_size", 4)),
+            worker_eval_decode=DecodeConfig.from_dict(
+                raw.get("worker_eval_decode", {})
+            ),
             synthesizer_decode=DecodeConfig.from_dict(
                 raw.get("synthesizer_decode", {})
             ),
@@ -485,6 +499,7 @@ class SFTConfig:
             "learning_rate": self.learning_rate,
             "weight_decay": self.weight_decay,
             "batch_size": self.batch_size,
+            "worker_eval_decode": self.worker_eval_decode.to_dict(),
             "synthesizer_decode": self.synthesizer_decode.to_dict(),
         }
 
@@ -493,8 +508,10 @@ class SFTConfig:
 class SynthesizerTrainingConfig:
     """Stage 2 configuration: SFT of C against frozen trained workers.
 
-    ``worker_checkpoint`` points at the Stage 1 best adapter directory
-    (selected on validation F1); the synthesizer gets its own LoRA ``phi``
+    ``worker_checkpoint`` points at the Stage 1 run directory (the best
+    step is then resolved from the recorded validation F1, never the last
+    step) or directly at a best adapter directory
+    (``.../step_XXXXX/adapter``); the synthesizer gets its own LoRA ``phi``
     on the same base model.
     """
 
@@ -513,7 +530,7 @@ class SynthesizerTrainingConfig:
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     sft: SFTConfig = field(default_factory=SFTConfig)
-    worker_checkpoint: Optional[str] = None  # path to Stage 1 best adapter
+    worker_checkpoint: Optional[str] = None  # Stage 1 run dir or adapter dir
     modes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
@@ -561,15 +578,42 @@ class SynthesizerTrainingConfig:
             raise ValueError("sft.weight_decay must be >= 0")
         if self.sft.batch_size < 1:
             raise ValueError("sft.batch_size must be >= 1")
-        if self.sft.synthesizer_decode.max_new_tokens < 1:
-            raise ValueError(
-                "sft.synthesizer_decode.max_new_tokens must be >= 1"
-            )
+        for name, decode in (
+            ("worker_eval_decode", self.sft.worker_eval_decode),
+            ("synthesizer_decode", self.sft.synthesizer_decode),
+        ):
+            if decode.do_sample:
+                raise ValueError(
+                    f"sft.{name}.do_sample must be False: evaluation "
+                    "decoding (workers and C) is deterministic per the TeX"
+                )
+            if decode.max_new_tokens < 1:
+                raise ValueError(
+                    f"sft.{name}.max_new_tokens must be >= 1"
+                )
         if self.model.dtype not in {"float16", "bfloat16", "float32"}:
             raise ValueError(
                 "model.dtype must be one of: float16, bfloat16, float32"
             )
+        if not self.model.device:
+            raise ValueError("model.device must be a non-empty string")
+        if self.model.max_input_length < 1:
+            raise ValueError("model.max_input_length must be >= 1")
+        if self.model.peft.r < 1 or self.model.peft.alpha < 1:
+            raise ValueError("model.peft.r and model.peft.alpha must be >= 1")
         _check_seed_range(self.seed, "seed")
+        for side in (self.data.train, self.data.val, self.data.test):
+            if side.num_questions < 1:
+                raise ValueError(
+                    f"data.{side.split}.num_questions must be >= 1"
+                )
+            _check_seed_range(side.selection_seed, "selection_seed")
+        _check_seed_range(self.data.partition_seed, "data.partition_seed")
+        _check_seed_range(
+            self.data.val_test_split_seed, "data.val_test_split_seed"
+        )
+        if not self.prompt_dir.is_dir():
+            raise ValueError(f"prompt_dir does not exist: {self.prompt_dir}")
         if not self.worker_checkpoint:
             raise ValueError(
                 "worker_checkpoint is required: point it at the Stage 1 "

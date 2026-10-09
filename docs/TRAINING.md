@@ -75,19 +75,22 @@ reward evaluator (official HotpotQA token F1 as reward v1).
 | `data.py` | three fixed manifests + `splits.json`, data-configuration fingerprint, split isolation asserts, pre-run split report |
 | `prompts_builder.py` | chat messages for A/B (role prompt + private evidence) and C (question + A report + B report); gold never included |
 | `policy.py` | `Policy` protocol; `HFPolicy` (base model + one shared peft LoRA, manual KV-cache sampling loop, causally aligned teacher forcing, and matching rollout/re-score distributions); optimizer-state remap for resume |
-| `fake_policy.py` | offline test doubles: `FakePolicy` (categorical θ with real autograd), `FakeTokenizer`, `FakeSynthesizer` (scripted C that runs the real parse+F1 code) |
+| `fake_policy.py` | offline test doubles: `FakePolicy` (categorical θ with real autograd), `FakeTokenizer`, `FakeChatTokenizer` (offset-carrying chat-template double for SFT tests), `FakeSynthesizer` / `FakeTrainableSynthesizer` (scripted / frozen-base+LoRA C that run the real parse+F1 code) |
 | `cross_pair.py` | pure functions: R → Q_A/Q_B, population std, signal flags, normalized advantages |
 | `grpo_loss.py` | pure tensor functions: ratio, clip, per-report objective, batch J/L, approx KL, clip fraction, entropy |
 | `rollout.py` | one question end to end: G×2 sampled reports, G×G C calls (i-major), signal filtering, empty-report exclusion |
 | `eval.py` | deterministic worker evaluation (F1/EM) + per-checkpoint report cache (Stage 2 reuses identical reports, incl. empty-report control) |
 | `worker_trainer.py` | Stage 1 loop: collect N signal questions → padded variable-length minibatches → periodic val → restore the best checkpoint by val F1 for final test → `metrics.jsonl` |
-| `synthesizer_trainer.py` | **Stage 2, not yet implemented** (see §7) |
+| `sft_data.py` | Stage 2 data: `build_sft_example` — render the chat template once, re-encode with char offsets, locate the gold-answer token span inside the wrapper, verify prefix stability, mask everything but gold tokens (`-100`) |
+| `sft_loss.py` | Stage 2 loss: causal next-token shift, per-example `1/\|y*\|` averaging (TeX Eq. 4), NaN-safe padding mask, non-finite guards |
+| `synthesizer_trainer.py` | Stage 2 loop: resolve the validation-best worker checkpoint → freeze workers → deterministic cached A/B reports → SFT C (independent LoRA) on gold tokens only → per-epoch val → restore best C → 4-condition final comparison (see §7) |
 | `trace.py` | `trace.json` recording/validation + `worked_example.md` renderer (reads trace.json only, deterministic) |
-| `cli.py` | `prepare-data`, `train-workers --mode trace|smoke|pilot|full [--resume]`, `render-trace` |
+| `cli.py` | `prepare-data`, `train-workers --mode trace|smoke|pilot|full [--resume]`, `train-synthesizer --mode trace|smoke`, `render-trace` |
 
-Configuration lives in `configs/cross_paired_grpo_workers.yaml` (all G / N /
-seed / lr / paths config-controlled; nothing hardcoded in code). Prompts
-live in `prompts_training/`.
+Configuration lives in `configs/cross_paired_grpo_workers.yaml` (Stage 1)
+and `configs/synthesizer_sft.yaml` (Stage 2); all G / N / seed / lr /
+paths are config-controlled (nothing hardcoded in code). Prompts live in
+`prompts_training/`.
 
 ## 5. Trace mode
 
@@ -131,6 +134,16 @@ python -m hotpot_mas.training.cli train-workers \
 # Resuming from the latest checkpoint
 python -m hotpot_mas.training.cli train-workers \
   --config configs/cross_paired_grpo_workers.yaml --mode smoke --resume
+
+# Stage 2 trace (1/1/1 questions, 1 epoch; frozen workers resolve from the
+# Stage 1 SMOKE run — Stage 1 trace records no validation F1, see §7)
+python -m hotpot_mas.training.cli train-synthesizer \
+  --config configs/synthesizer_sft.yaml --mode trace
+
+# Stage 2 smoke (64/32/32 questions, 2 epochs; frozen workers resolve from
+# the Stage 1 smoke run's validation-best checkpoint)
+python -m hotpot_mas.training.cli train-synthesizer \
+  --config configs/synthesizer_sft.yaml --mode smoke
 ```
 
 `pilot` / `full` use the same commands with `--mode pilot|full`. **Do not
@@ -141,24 +154,76 @@ Outputs land under `outputs/training/<experiment_id>/<experiment_version>/`
 (checkpoints `step_XXXX/`, `metrics.jsonl`, `eval_cache/`, and in trace
 mode `trace.json` + `worked_example.md`).
 
-## 7. Stage 2 (synthesizer SFT) — status
+## 7. Stage 2 (synthesizer SFT) — implemented
 
-Not yet implemented. Per the plan it follows after Stage 1 has been
-verified end to end on the cluster: freeze the best worker checkpoint
-(selected on validation F1), give C its own independent LoRA, SFT on
-input = question + A report + B report with target = gold answer only
-(loss on answer tokens only), select the best C by validation F1, and
-compare original C0 vs trained Cφ on identical cached reports (F1 / EM /
-generated tokens) plus the empty-report control. The `Synthesizer`
-interface, the eval report cache, and `SynthesizerTrainingConfig` already
-exist; `synthesizer_trainer.py`, `configs/synthesizer_sft.yaml` and the
-`train-synthesizer` CLI subcommand are intentionally not wired up yet.
+TeX Algorithm 2: freeze the Stage 1 workers and SFT-train synthesizer C.
+
+**Pipeline** (all in `hotpot_mas/training/synthesizer_trainer.py`):
+
+1. **Resolve the worker checkpoint** — `worker_checkpoint` may be a Stage 1
+   run dir or a `step_XXXXX/adapter` dir. A run dir resolves the *best* step
+   by `mean_val_f1` from `metrics.jsonl` (strict `>`, earliest max — the same
+   update rule as `worker_trainer`) and cross-checks the final `state.json`
+   (`best_step`/`best_val_f1` must match exactly); a mismatch or a missing
+   best adapter is a hard error — Stage 2 never falls back to untrained
+   workers. If the adapter carries `adapter_config.json`, its base model /
+   LoRA r / alpha are checked against the Stage 2 config.
+2. **Freeze the workers** — every worker parameter `requires_grad_(False)`;
+   any remaining trainable parameter is a hard error.
+3. **Deterministic cached A/B reports** — one greedy-decode report per
+   (question, side) with the *worker-evaluation* decode settings, cached per
+   split under `report_cache/<identity>.json`. The identity is a hash over
+   {worker checkpoint, split, decode params, prompt version, prompt hashes},
+   so a different checkpoint/config never reuses stale reports. C0 (step 0)
+   and Cφ (final test) always read the *same* cache; the training cache is
+   separate from the val/test caches.
+4. **SFT on gold-answer tokens only** — C shares the Gemma-3-1B base with
+   its own fresh LoRA φ (r=16, α=32, dropout=0, all-linear; a fresh adapter
+   equals the base model, so C0 is the step-0 evaluation — enforced at load
+   time by a zero-LoRA check). `build_sft_example` renders the chat template
+   once, re-encodes with char offsets, locates the gold-answer token span
+   *inside* the wrapper, and masks everything else — question, A/B report,
+   `Celab: <FINAL>` and closing `</FINAL>` (prefix stability of the
+   tokenizer is verified; if no token lies fully inside the answer span the
+   run fails instead of supervising the whole completion). The loss uses the
+   causal next-token shift and per-example `1/|y*|` averaging (Eq. 4).
+5. **Loop** — per minibatch: `zero_grad → backward → step`, only C's LoRA
+   gets gradients; per epoch: validation on the fixed cached reports
+   (F1/EM/C tokens, plus the empty-report control), save `epoch_NNN/`, save
+   `best_checkpoint/` on improvement. After the last epoch the best C is
+   *restored* (never the last epoch). Memory: the worker model is deleted
+   before C is loaded (single A5000).
+6. **Final comparison** — on the identical cached test reports:
+   C0 + reports, Cφ + reports, C0 + empty, Cφ + empty → mean F1 / EM / C
+   generated tokens / parse counts, plus A/B token counts (from the cache,
+   not counted as C's tokens), in `final_comparison.json` + `report.md`.
+
+**Outputs** land under
+`outputs/training/synthesizer_sft/<mode>/`:
+`config_snapshot.json`, `worker_checkpoint_provenance.json`,
+`report_cache_metadata.json`, `report_cache/`, `step0_baseline.json`,
+`metrics.jsonl` (fields: `epoch, train_loss, grad_norm, mean_val_f1,
+mean_val_em, mean_val_c_tokens, empty_val_f1, empty_val_em, best_val_f1,
+checkpoint_path`), `epoch_NNN/`, `best_checkpoint/`,
+`final_comparison.json`, `report.md`.
+
+**Known wrinkle**: Stage 1 *trace* runs skip validation entirely (no
+validation F1 is ever recorded), so the Stage 2 trace config resolves its
+frozen workers from the Stage 1 *smoke* run's best checkpoint instead.
 
 ## 8. Known limitations
 
-- The complete CPU-only test suite passes locally. A real Gemma trace/smoke
-  run still requires the GPU cluster and remains the verification gate for
-  model loading, PEFT integration, CUDA placement, and GPU memory use.
+- The CPU-only test suite (Stage 1 + Stage 2: best-checkpoint selection,
+  frozen-worker/cache reuse, gold-only SFT masking, no causal off-by-one,
+  best-C restore, empty-report control, non-finite guards, CLI parsing)
+  runs offline; a real Gemma trace/smoke run still requires the GPU
+  cluster and remains the verification gate for model loading, PEFT
+  integration, CUDA placement, and GPU memory use. The Stage 2 suite has
+  not been executed on the development machine (no Python interpreter
+  there) — run it in the cluster environment.
+- The Stage 2 worker-adapter compatibility check is skipped when the
+  adapter carries no `adapter_config.json` (the Stage 1 adapter dirs do
+  carry it, so this only affects hand-made checkpoints).
 - `cross_paired_grpo.pdf` was not diffed word by word (no poppler locally);
   the TeX is authoritative.
 - The worker partition is oracle-balanced from gold supporting metadata —

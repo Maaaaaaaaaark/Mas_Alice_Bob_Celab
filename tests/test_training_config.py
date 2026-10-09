@@ -198,3 +198,90 @@ class TestSynthesizerConfig:
         assert sft.num_epochs == 3
         assert sft.learning_rate == 1e-4
         assert sft.synthesizer_decode.do_sample is False
+
+    def _write_sft_yaml(
+        self, tmp_path: Path, extra: Dict[str, Any] = None,
+        name: str = "sft.yaml",
+    ) -> Path:
+        raw = base_yaml()
+        raw["prompt_dir"] = str(REPO_ROOT / "prompts_training")
+        raw["experiment_id"] = "sft"
+        raw["sft"] = {"num_epochs": 2}
+        checkpoint = tmp_path / "worker_run"
+        checkpoint.mkdir(exist_ok=True)
+        raw["worker_checkpoint"] = str(checkpoint)
+        for key, value in (extra or {}).items():
+            raw[key] = value
+        path = tmp_path / name
+        path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+        return path
+
+    def test_loads_with_worker_checkpoint_dir(self, tmp_path: Path):
+        path = self._write_sft_yaml(tmp_path)
+        cfg = SynthesizerTrainingConfig.from_yaml(path)
+        assert Path(cfg.worker_checkpoint).is_dir()
+        assert Path(cfg.worker_checkpoint).is_absolute()
+
+    def test_worker_checkpoint_must_exist(self, tmp_path: Path):
+        path = self._write_sft_yaml(tmp_path)
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw["worker_checkpoint"] = str(tmp_path / "missing_run")
+        path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+        with pytest.raises(ValueError, match="does not exist"):
+            SynthesizerTrainingConfig.from_yaml(path)
+
+    def test_deterministic_decodes_enforced(self, tmp_path: Path):
+        for field in ("worker_eval_decode", "synthesizer_decode"):
+            path = self._write_sft_yaml(
+                tmp_path,
+                extra={
+                    "sft": {
+                        "num_epochs": 2,
+                        field: {
+                            "do_sample": True,
+                            "temperature": 0.6,
+                            "top_p": 1.0,
+                            "max_new_tokens": 64,
+                        },
+                    }
+                },
+                name=f"bad_{field}.yaml",
+            )
+            with pytest.raises(ValueError, match="deterministic"):
+                SynthesizerTrainingConfig.from_yaml(path)
+
+    def test_bad_sft_values_rejected(self, tmp_path: Path):
+        for key, value in [
+            ("num_epochs", 0),
+            ("learning_rate", 0.0),
+            ("batch_size", 0),
+            ("weight_decay", -0.1),
+        ]:
+            path = self._write_sft_yaml(
+                tmp_path,
+                extra={"sft": {"num_epochs": 2, key: value}},
+                name=f"bad_sft_{key}.yaml",
+            )
+            with pytest.raises(ValueError):
+                SynthesizerTrainingConfig.from_yaml(path)
+
+    def test_trace_and_smoke_modes_apply(self, tmp_path: Path):
+        path = self._write_sft_yaml(
+            tmp_path,
+            extra={
+                "modes": {
+                    "trace": {
+                        "experiment_version": "trace",
+                        "sft": {"num_epochs": 1, "batch_size": 1},
+                    },
+                    "smoke": {"experiment_version": "smoke"},
+                }
+            },
+        )
+        trace = SynthesizerTrainingConfig.from_yaml(path, mode="trace")
+        assert trace.experiment_version == "trace"
+        assert trace.sft.num_epochs == 1
+        assert trace.sft.batch_size == 1
+        smoke = SynthesizerTrainingConfig.from_yaml(path, mode="smoke")
+        assert smoke.experiment_version == "smoke"
+        assert smoke.sft.num_epochs == 2

@@ -39,6 +39,7 @@ class QuestionEval:
     b_text: str = ""
     c_raw: str = ""
     c_pred: str = ""
+    parsed: Optional[bool] = None  # <FINAL> tag parsed successfully
 
 
 @dataclass
@@ -150,6 +151,52 @@ def _decode_reports(
     )
 
 
+def generate_report_cache(
+    policy: Policy,
+    questions: List[SelectedQuestion],
+    prompts: TrainingPrompts,
+    eval_decode: DecodeConfig,
+    base_seed: int,
+    cache: EvalReportCache,
+) -> EvalReportCache:
+    """Decode the deterministic A/B reports for every question and save them.
+
+    Stage 2 (Algorithm 2) builds its own report caches from the frozen best
+    worker checkpoint with the same decoding setting used at worker
+    evaluation; C0 and Cphi are then scored on these identical cached
+    reports. Missing entries are decoded and added, existing entries are
+    reused as-is, and the cache is saved after every call.
+    """
+    for question in questions:
+        if cache.get(question.question_id) is not None:
+            continue
+        (
+            a_text,
+            b_text,
+            a_ids,
+            b_ids,
+            _a_tokens,
+            _b_tokens,
+        ) = _decode_reports(
+            question,
+            policy,
+            prompts,
+            eval_decode,
+            base_seed,
+        )
+        cache.put(
+            question.question_id,
+            {
+                "a_text": a_text,
+                "b_text": b_text,
+                "a_ids": a_ids,
+                "b_ids": b_ids,
+            },
+        )
+    cache.save()
+    return cache
+
+
 def evaluate_workers(
     policy: Policy,
     synthesizer: Synthesizer,
@@ -218,6 +265,7 @@ def evaluate_workers(
                 b_text=b_text,
                 c_raw=synth.raw_output,
                 c_pred=synth.pred_answer,
+                parsed=synth.parsed,
             )
         )
     if cache is not None:
@@ -273,6 +321,7 @@ def evaluate_synthesizer_on_cache(
                 b_text=b_text,
                 c_raw=synth.raw_output,
                 c_pred=synth.pred_answer,
+                parsed=synth.parsed,
             )
         )
     return result

@@ -6,11 +6,10 @@ Subcommands:
   one configuration (or one mode override of it).
 - ``train-workers``: Stage 1 cross-paired GRPO worker training in the
   requested run mode (trace / smoke / pilot / full).
+- ``train-synthesizer``: Stage 2 SFT of the synthesizer C against the
+  frozen best Stage 1 workers (trace / smoke).
 - ``render-trace``: regenerate ``worked_example.md`` from an existing
   ``trace.json`` (no model, no GPU).
-
-``train-synthesizer`` (Stage 2 SFT of C) is added once Stage 1 has been
-validated end to end; until then it is intentionally not exposed.
 """
 
 from __future__ import annotations
@@ -55,6 +54,24 @@ def cmd_train_workers(args: argparse.Namespace) -> int:
     print("training finished:")
     for key, value in outcome.items():
         print(f"  {key}: {value}")
+    return 0
+
+
+def cmd_train_synthesizer(args: argparse.Namespace) -> int:
+    from .config import SynthesizerTrainingConfig
+    from .data import describe_split, load_splits
+    from .synthesizer_trainer import SynthesizerTrainer
+
+    cfg = SynthesizerTrainingConfig.from_yaml(args.config, mode=args.mode)
+    print(describe_split(cfg))
+    # Fail fast with a clear message when the manifests are missing.
+    load_splits(cfg.manifest_dir)
+    trainer = SynthesizerTrainer(cfg, mode=args.mode)
+    outcome = trainer.train()
+    print("synthesizer SFT finished:")
+    for key, value in outcome.items():
+        if key != "comparison":
+            print(f"  {key}: {value}")
     return 0
 
 
@@ -106,6 +123,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="resume from the latest checkpoint in the stage directory",
     )
 
+    synth = sub.add_parser(
+        "train-synthesizer",
+        help="Stage 2: SFT of C against frozen best workers",
+    )
+    synth.add_argument("--config", required=True)
+    synth.add_argument(
+        "--mode", required=True, choices=["trace", "smoke"]
+    )
+
     render = sub.add_parser(
         "render-trace",
         help="regenerate worked_example.md from a trace.json",
@@ -121,6 +147,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     handlers = {
         "prepare-data": cmd_prepare_data,
         "train-workers": cmd_train_workers,
+        "train-synthesizer": cmd_train_synthesizer,
         "render-trace": cmd_render_trace,
     }
     try:

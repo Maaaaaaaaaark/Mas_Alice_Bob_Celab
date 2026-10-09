@@ -1,0 +1,102 @@
+# Stage 2: SFT of the synthesizer C against frozen trained workers
+# (cross_paired_grpo.tex, Algorithm 2). The workers A/B are frozen at
+# the Stage 1 best checkpoint (selected on validation F1, never the
+# latest step) and keep sharing one LoRA; C gets its own independent
+# LoRA phi on the same base model, supervised only on the gold-answer
+# tokens of D_C (Eq. 4).
+#
+# worker_checkpoint points at the Stage 1 run directory; the best step
+# is resolved from its metrics.jsonl mean_val_f1 argmax cross-checked
+# against the final state.json, or it may point directly at a best
+# adapter directory (.../step_XXXXX/adapter).
+#
+# Run modes (deep-merged over this base):
+#   trace  reuses the Stage 1 trace manifests (1/1/1), 1 epoch, batch 1
+#   smoke  reuses the Stage 1 smoke manifests (64/32/32), 2 epochs
+#
+# The base block below is the smoke configuration; each mode overrides
+# its own data counts, epochs, and worker-checkpoint identity.
+
+experiment_id: synthesizer_sft
+experiment_version: smoke
+seed: 0
+output_dir: outputs/training
+manifest_dir: outputs/training_manifests/smoke   # reuses Stage 1 smoke manifests
+prompt_dir: prompts_training
+worker_checkpoint: outputs/training/cross_paired_grpo_workers/smoke
+
+data:
+  dataset: hotpot_qa
+  dataset_config: distractor
+  train:
+    split: train                 # official HotpotQA train split
+    num_questions: 64
+    selection_seed: 0
+  val:
+    split: validation
+    num_questions: 32
+    selection_seed: 1
+  test:
+    split: validation            # official test has no public gold answers
+    num_questions: 32
+    selection_seed: 2
+  partition_seed: 0              # must match the Stage 1 smoke manifests
+  val_test_split_seed: 0
+
+model:
+  name: google/gemma-3-1b-it
+  revision: null
+  dtype: float16
+  device: cuda
+  attn_implementation: null
+  max_input_length: 30000
+  peft:                          # C's independent LoRA phi
+    r: 16
+    alpha: 32
+    dropout: 0.0
+    target_modules: null         # null -> peft "all-linear"
+
+sft:
+  num_epochs: 2                  # 2-3 per the experiment plan
+  learning_rate: 1.0e-4
+  weight_decay: 0.0
+  batch_size: 4                  # D_C examples per minibatch
+  worker_eval_decode:            # must match Stage 1 workers.eval_decode
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0
+    max_new_tokens: 256
+  synthesizer_decode:            # C's own greedy evaluation decode
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0
+    max_new_tokens: 64
+
+modes:
+  trace:
+    experiment_version: trace
+    manifest_dir: outputs/training_manifests/trace   # Stage 1 trace manifests
+    # Stage 1 trace runs skip validation and therefore record no best
+    # checkpoint; the trace resolves the frozen workers from the Stage 1
+    # smoke run's validation-best step instead.
+    worker_checkpoint: outputs/training/cross_paired_grpo_workers/smoke
+    data:
+      train:
+        split: validation
+        num_questions: 1
+        selection_seed: 0
+      val:
+        split: validation
+        num_questions: 1
+        selection_seed: 1
+      test:
+        split: validation
+        num_questions: 1
+        selection_seed: 2
+    sft:
+      num_epochs: 1
+      batch_size: 1
+  smoke:
+    experiment_version: smoke
+    manifest_dir: outputs/training_manifests/smoke
+    worker_checkpoint: outputs/training/cross_paired_grpo_workers/smoke

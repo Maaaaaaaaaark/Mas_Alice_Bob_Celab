@@ -55,7 +55,12 @@ from .eval import (
 )
 from .policy import HFPolicy, Policy
 from .prompts_builder import TrainingPrompts
-from .sft_data import build_sft_example, collate_sft_examples
+from .sft_data import (
+    C_WRAPPER_FORMAT,
+    IGNORE_INDEX,
+    build_sft_example,
+    collate_sft_examples,
+)
 from .sft_loss import (
     assert_finite,
     assert_finite_float,
@@ -351,6 +356,7 @@ class SynthesizerTrainer:
             self.stage_dir / "step0_baseline.json",
             self.stage_dir / "final_comparison.json",
             self.stage_dir / "report.md",
+            self.stage_dir / "worked_example.md",
             self.stage_dir / "c0_checkpoint",
             self.stage_dir / "best_checkpoint",
         ] + sorted(self.stage_dir.glob("epoch_*"))
@@ -866,6 +872,157 @@ class SynthesizerTrainer:
             "\n".join(lines) + "\n", encoding="utf-8"
         )
 
+    def _write_trace_worked_example(
+        self,
+        c0_test: SplitEvalResult,
+        c0_empty_test: SplitEvalResult,
+        c_phi_test: SplitEvalResult,
+        c_phi_empty_test: SplitEvalResult,
+        comparison: Dict[str, Any],
+    ) -> Optional[Path]:
+        """Write one human-readable Stage 2 data-flow example in trace mode."""
+        if self.mode != "trace" or not self.train_questions:
+            return None
+
+        question = self.train_questions[0]
+        entry = self.report_caches["train"].get(question.question_id)
+        if entry is None:
+            raise RuntimeError(
+                f"trace report cache misses {question.question_id}"
+            )
+        messages = self.prompts.synthesizer_messages(
+            question.question, entry["a_text"], entry["b_text"]
+        )
+        example = build_sft_example(
+            self.synthesizer.tokenizer,
+            messages,
+            question.answer,
+            question_id=question.question_id,
+        )
+        supervised_ids = [
+            label for label in example.labels if label != IGNORE_INDEX
+        ]
+        supervised_text = self.synthesizer.tokenizer.decode(supervised_ids)
+        epoch_metrics = _read_jsonl(self.metrics_path)
+
+        def fenced(value: Any) -> List[str]:
+            text = str(value).replace("```", "` ` `")
+            return ["```text", text, "```", ""]
+
+        def result_lines(
+            label: str, result: SplitEvalResult
+        ) -> List[str]:
+            if not result.questions:
+                return [f"- **{label}:** no question"]
+            row = result.questions[0]
+            return [
+                f"- **{label}:** prediction `{row.c_pred}`, "
+                f"F1 `{row.f1:.4f}`, EM `{row.em:.4f}`, "
+                f"generated tokens `{row.c_generated_tokens}`, "
+                f"FINAL parsed `{row.parsed}`",
+                f"  - raw output: `{row.c_raw}`",
+            ]
+
+        lines: List[str] = [
+            "# Stage 2 worked example: frozen workers, SFT of C",
+            "",
+            "This file is generated from the real trace artifacts; it is "
+            "not a hand-written example.",
+            "",
+            "## 1. Resolved frozen worker",
+            "",
+            f"- adapter: `{self.worker_checkpoint.adapter_dir}`",
+            f"- best Stage 1 step: `{self.worker_checkpoint.best_step}`",
+            f"- best Stage 1 validation F1: "
+            f"`{self.worker_checkpoint.best_val_f1}`",
+            f"- content identity: `{self.worker_checkpoint.identity}`",
+            "- worker decoding: deterministic (`do_sample=false`)",
+            "",
+            "## 2. One Stage 2 training question",
+            "",
+            f"- question id: `{question.question_id}`",
+            f"- question: {question.question}",
+            f"- gold answer (training target only): `{question.answer}`",
+            "",
+            "### Alice input evidence",
+            "",
+        ]
+        lines.extend(fenced(question.evidence_alice))
+        lines.extend(["### Alice frozen-worker report", ""])
+        lines.extend(fenced(entry["a_text"]))
+        lines.extend(["### Bob input evidence", ""])
+        lines.extend(fenced(question.evidence_bob))
+        lines.extend(["### Bob frozen-worker report", ""])
+        lines.extend(fenced(entry["b_text"]))
+        lines.extend(
+            [
+                "## 3. Actual input sent to C",
+                "",
+                "The gold answer below is not present in these messages "
+                "unless a worker independently reported it.",
+                "",
+            ]
+        )
+        lines.extend(fenced(json.dumps(messages, indent=2, ensure_ascii=False)))
+        lines.extend(
+            [
+                "## 4. SFT target and loss mask",
+                "",
+                f"- teacher-forced completion: "
+                f"`{C_WRAPPER_FORMAT.format(question.answer)}`",
+                f"- total sequence tokens: `{len(example.input_ids)}`",
+                f"- conditioning/prompt tokens: `{example.prompt_len}`",
+                f"- assistant-completion tokens: `{example.completion_len}`",
+                f"- supervised gold-answer tokens: "
+                f"`{example.supervised_tokens}`",
+                f"- supervised token ids: `{supervised_ids}`",
+                f"- decoded supervised span: `{supervised_text}`",
+                "",
+                "Only the supervised gold-answer tokens contribute to "
+                "cross-entropy. The question, reports, wrapper, and padding "
+                "are masked with `-100`.",
+                "",
+                "## 5. Optimization records",
+                "",
+            ]
+        )
+        for record in epoch_metrics:
+            lines.append(
+                f"- epoch `{record['epoch']}`: train loss "
+                f"`{record.get('train_loss')}`, validation F1 "
+                f"`{record.get('mean_val_f1')}`, validation EM "
+                f"`{record.get('mean_val_em')}`, gradient norm "
+                f"`{record.get('grad_norm')}`"
+            )
+        lines.extend(
+            [
+                "",
+                f"Selected checkpoint: epoch `{self.best_epoch}` with "
+                f"validation F1 `{self.best_val_f1:.4f}`.",
+                "",
+                "## 6. Held-out test example after model selection",
+                "",
+            ]
+        )
+        lines.extend(result_lines("C0 + reports", c0_test))
+        lines.extend(result_lines("C0 + empty reports", c0_empty_test))
+        lines.extend(result_lines("C_phi + reports", c_phi_test))
+        lines.extend(result_lines("C_phi + empty reports", c_phi_empty_test))
+        lines.extend(
+            [
+                "",
+                "## 7. Aggregate trace result",
+                "",
+                "```json",
+                json.dumps(comparison, indent=2, ensure_ascii=False),
+                "```",
+                "",
+            ]
+        )
+        output_path = self.stage_dir / "worked_example.md"
+        output_path.write_text("\n".join(lines), encoding="utf-8")
+        return output_path
+
     # -- main loop -----------------------------------------------------
 
     def train(self) -> Dict[str, Any]:
@@ -941,6 +1098,13 @@ class SynthesizerTrainer:
             c0_test, c0_empty_test, c_phi_test, c_phi_empty_test
         )
         self._write_report(comparison)
+        worked_example_path = self._write_trace_worked_example(
+            c0_test,
+            c0_empty_test,
+            c_phi_test,
+            c_phi_empty_test,
+            comparison,
+        )
         logger.info(
             "final test comparison: C0 F1 %.4f -> C_phi F1 %.4f "
             "(empty: %.4f -> %.4f)",
@@ -955,5 +1119,7 @@ class SynthesizerTrainer:
             "best_val_f1": self.best_val_f1,
             "test_f1_c0": comparison["c0_with_reports"]["mean_f1"],
             "test_f1_c_phi": comparison["c_phi_with_reports"]["mean_f1"],
+            "worked_example_path": str(worked_example_path)
+            if worked_example_path else None,
             "comparison": comparison,
         }

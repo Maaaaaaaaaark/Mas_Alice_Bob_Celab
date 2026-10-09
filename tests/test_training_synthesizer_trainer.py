@@ -423,3 +423,16 @@ class TestSynthesizerTrainerEndToEnd:
         assert summary["best_val_f1"] == 0.0
         assert summary["test_f1_c0"] == 0.0
         assert summary["test_f1_c_phi"] == 0.0
+
+    def test_trace_writes_stage2_worked_example(self, stage2) -> None:
+        trainer, _, _ = make_trainer(stage2["cfg"])
+        trainer.mode = "trace"
+        summary = trainer.train()
+        path = stage2["cfg"].stage_dir() / "worked_example.md"
+        assert summary["worked_example_path"] == str(path)
+        text = path.read_text(encoding="utf-8")
+        assert "Stage 2 worked example" in text
+        assert "Alice frozen-worker report" in text
+        assert "SFT target and loss mask" in text
+        assert "C0 + reports" in text
+        assert "C_phi + reports" in text

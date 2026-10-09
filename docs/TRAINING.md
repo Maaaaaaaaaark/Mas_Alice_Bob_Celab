@@ -208,7 +208,9 @@ TeX Algorithm 2: freeze the Stage 1 workers and SFT-train synthesizer C.
 `metrics.jsonl` (fields: `epoch, train_loss, grad_norm, mean_val_f1,
 mean_val_em, mean_val_c_tokens, empty_val_f1, empty_val_em, best_val_f1,
 checkpoint_path`), `epoch_NNN/`, `best_checkpoint/`,
-`final_comparison.json`, `report.md`.
+`final_comparison.json`, `report.md`; trace mode additionally writes a
+per-example `worked_example.md` showing the frozen-worker inputs/reports,
+actual C messages, SFT mask, optimization records, and C0/Cphi outputs.
 
 **Known wrinkle**: Stage 1 *trace* runs skip validation entirely (no
 validation F1 is ever recorded), so the Stage 2 trace config resolves its

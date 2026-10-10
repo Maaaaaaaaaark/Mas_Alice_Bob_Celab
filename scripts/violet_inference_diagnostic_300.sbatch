@@ -7,8 +7,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
-#SBATCH --constraint=l40s
-#SBATCH --time=12:00:00
+#SBATCH --constraint=a5000
+#SBATCH --time=1-00:00:00
 #SBATCH --requeue
 #SBATCH --output=/common/home/users/y/yh.liang.2026/slurm_logs/%x.%j.out
 

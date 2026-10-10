@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from hotpot_mas.evaluation import exact_match_score
 from hotpot_mas.question_selection import SelectedQuestion
 from hotpot_mas.seeds import derive_generation_seed
 
@@ -48,6 +49,7 @@ class PairResult:
     j: int
     messages: List[Dict[str, str]]
     synth: SynthResult
+    reward: float
 
 
 @dataclass
@@ -67,7 +69,33 @@ class QuestionRollout:
         return bool(self.kept_reports)
 
     def reward_matrix(self) -> List[List[float]]:
-        return [[pair.synth.f1 for pair in row] for row in self.pairs]
+        return [[pair.reward for pair in row] for row in self.pairs]
+
+
+def pair_reward(
+    kind: str,
+    synthesizer: Synthesizer,
+    synth: SynthResult,
+    messages: List[Dict[str, str]],
+    gold: str,
+) -> float:
+    """Return the configured scalar reward for one A/B report pair."""
+    if kind == "f1":
+        return float(synth.f1)
+    if kind == "em":
+        return float(exact_match_score(synth.pred_answer, gold))
+    if kind == "gold_mean_log_likelihood":
+        likelihood_fn = getattr(
+            synthesizer, "gold_answer_log_likelihood", None
+        )
+        if likelihood_fn is None:
+            raise TypeError(
+                "gold_mean_log_likelihood reward requires a synthesizer "
+                "with gold_answer_log_likelihood()"
+            )
+        value = likelihood_fn(messages, gold)
+        return float(value["mean_log_likelihood"])
+    raise ValueError(f"unsupported reward kind: {kind!r}")
 
 
 def rollout_question(
@@ -128,10 +156,25 @@ def rollout_question(
                 a_report=rollout_reports["A"][i].report.text,
                 b_report=rollout_reports["B"][j].report.text,
             )
-            row.append(PairResult(i=i, j=j, messages=messages, synth=synth))
+            reward = pair_reward(
+                workers.reward_kind,
+                synthesizer,
+                synth,
+                messages,
+                question.answer,
+            )
+            row.append(
+                PairResult(
+                    i=i,
+                    j=j,
+                    messages=messages,
+                    synth=synth,
+                    reward=reward,
+                )
+            )
         pairs.append(row)
 
-    r_matrix = [[pair.synth.f1 for pair in row] for row in pairs]
+    r_matrix = [[pair.reward for pair in row] for row in pairs]
     signal = build_signal_result(
         r_matrix, workers.delta, workers.eps_n
     )
@@ -150,6 +193,18 @@ def rollout_question(
                         "side": side,
                         "index": rr.index,
                         "reason": "empty_report",
+                    }
+                )
+                continue
+            if rr.report.finish_reason != "eos":
+                # A max-token cutoff is not a completed report in the task
+                # environment. It may be scored for diagnostics, but it must
+                # never contribute a policy gradient.
+                excluded.append(
+                    {
+                        "side": side,
+                        "index": rr.index,
+                        "reason": "truncated_at_max_new_tokens",
                     }
                 )
                 continue

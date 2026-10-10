@@ -1,0 +1,57 @@
+experiment_id: reward_comparison
+experiment_version: train50_g4
+seed: 0
+output_dir: outputs/diagnostics
+manifest_dir: outputs/training_manifests/reward_comparison_50
+prompt_dir: prompts_training
+
+data:
+  dataset: hotpot_qa
+  dataset_config: distractor
+  train: {split: train, num_questions: 50, selection_seed: 0}
+  val: {split: validation, num_questions: 1, selection_seed: 1}
+  test: {split: validation, num_questions: 1, selection_seed: 2}
+  partition_seed: 0
+  val_test_split_seed: 0
+
+model:
+  name: google/gemma-3-1b-it
+  revision: null
+  dtype: bfloat16
+  device: cuda
+  attn_implementation: null
+  max_input_length: 30000
+  peft: {r: 16, alpha: 32, dropout: 0.0, target_modules: null}
+
+workers:
+  G: 4
+  delta: 0.05
+  eps_n: 1.0e-6
+  clip_epsilon: 0.2
+  num_policy_epochs: 1
+  minibatch_size: 1
+  max_sampling_attempts: 200
+  learning_rate: 1.0e-5
+  weight_decay: 0.0
+  questions_per_update: 1
+  steps: 1
+  eval_interval: 1
+  final_test_eval: false
+  rollout:
+    do_sample: true
+    temperature: 0.6
+    top_p: 1.0
+    max_new_tokens: 96
+  eval_decode:
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0
+    max_new_tokens: 96
+  synthesizer_decode:
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0
+    max_new_tokens: 16
+    answer_prefix: "Answer:"
+    stop_on_newline: true
+    strip_answer_labels: true

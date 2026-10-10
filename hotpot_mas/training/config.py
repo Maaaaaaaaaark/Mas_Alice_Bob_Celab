@@ -199,6 +199,9 @@ class DecodeConfig:
     temperature: float = 0.6
     top_p: float = 1.0
     max_new_tokens: int = 256
+    answer_prefix: str = ""
+    stop_on_newline: bool = False
+    strip_answer_labels: bool = False
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "DecodeConfig":
@@ -207,6 +210,9 @@ class DecodeConfig:
             temperature=float(raw.get("temperature", 0.6)),
             top_p=float(raw.get("top_p", 1.0)),
             max_new_tokens=int(raw.get("max_new_tokens", 256)),
+            answer_prefix=str(raw.get("answer_prefix", "")),
+            stop_on_newline=bool(raw.get("stop_on_newline", False)),
+            strip_answer_labels=bool(raw.get("strip_answer_labels", False)),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -215,6 +221,9 @@ class DecodeConfig:
             "temperature": self.temperature,
             "top_p": self.top_p,
             "max_new_tokens": self.max_new_tokens,
+            "answer_prefix": self.answer_prefix,
+            "stop_on_newline": self.stop_on_newline,
+            "strip_answer_labels": self.strip_answer_labels,
         }
 
 
@@ -223,6 +232,7 @@ class WorkerTrainingConfig:
     """Stage 1 hyperparameters (Algorithm 1 of cross_paired_grpo.tex)."""
 
     G: int = 4  # reports sampled per worker per question
+    reward_kind: str = "f1"  # f1 | em | gold_mean_log_likelihood
     delta: float = 0.05  # signal threshold: std(Q_side) > delta
     eps_n: float = 1e-6  # advantage normalization epsilon
     clip_epsilon: float = 0.2  # PPO clip range
@@ -231,6 +241,11 @@ class WorkerTrainingConfig:
     max_sampling_attempts: int = 100  # guard against endless no-signal loops
     learning_rate: float = 1e-4
     weight_decay: float = 0.0
+    max_grad_norm: float = 1.0  # clip shared-LoRA gradient norm before step
+    record_exact_kl: bool = False  # full-vocabulary KL on rollout positions
+    fixed_train_eval: bool = False  # evaluate fixed train set each update
+    require_train_reward_increase: bool = False
+    reward_increase_min_delta: float = 0.0
     questions_per_update: int = 8  # N: signal questions per update
     steps: int = 100  # T: number of updates
     eval_interval: int = 10  # K: validation evaluation frequency
@@ -253,6 +268,7 @@ class WorkerTrainingConfig:
     def from_dict(cls, raw: Dict[str, Any]) -> "WorkerTrainingConfig":
         return cls(
             G=int(raw.get("G", 4)),
+            reward_kind=str(raw.get("reward_kind", "f1")),
             delta=float(raw.get("delta", 0.05)),
             eps_n=float(raw.get("eps_n", 1e-6)),
             clip_epsilon=float(raw.get("clip_epsilon", 0.2)),
@@ -261,6 +277,15 @@ class WorkerTrainingConfig:
             max_sampling_attempts=int(raw.get("max_sampling_attempts", 100)),
             learning_rate=float(raw.get("learning_rate", 1e-4)),
             weight_decay=float(raw.get("weight_decay", 0.0)),
+            max_grad_norm=float(raw.get("max_grad_norm", 1.0)),
+            record_exact_kl=bool(raw.get("record_exact_kl", False)),
+            fixed_train_eval=bool(raw.get("fixed_train_eval", False)),
+            require_train_reward_increase=bool(
+                raw.get("require_train_reward_increase", False)
+            ),
+            reward_increase_min_delta=float(
+                raw.get("reward_increase_min_delta", 0.0)
+            ),
             questions_per_update=int(raw.get("questions_per_update", 8)),
             steps=int(raw.get("steps", 100)),
             eval_interval=int(raw.get("eval_interval", 10)),
@@ -279,6 +304,7 @@ class WorkerTrainingConfig:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "G": self.G,
+            "reward_kind": self.reward_kind,
             "delta": self.delta,
             "eps_n": self.eps_n,
             "clip_epsilon": self.clip_epsilon,
@@ -287,6 +313,11 @@ class WorkerTrainingConfig:
             "max_sampling_attempts": self.max_sampling_attempts,
             "learning_rate": self.learning_rate,
             "weight_decay": self.weight_decay,
+            "max_grad_norm": self.max_grad_norm,
+            "record_exact_kl": self.record_exact_kl,
+            "fixed_train_eval": self.fixed_train_eval,
+            "require_train_reward_increase": self.require_train_reward_increase,
+            "reward_increase_min_delta": self.reward_increase_min_delta,
             "questions_per_update": self.questions_per_update,
             "steps": self.steps,
             "eval_interval": self.eval_interval,
@@ -369,6 +400,13 @@ class TrainingConfig:
         if w.G < 2:
             raise ValueError("workers.G must be >= 2 (one report per side "
                              "gives no within-side variance)")
+        if w.reward_kind not in {
+            "f1", "em", "gold_mean_log_likelihood"
+        }:
+            raise ValueError(
+                "workers.reward_kind must be one of: f1, em, "
+                "gold_mean_log_likelihood"
+            )
         if w.questions_per_update < 1:
             raise ValueError("workers.questions_per_update (N) must be >= 1")
         if w.steps < 1:
@@ -389,6 +427,15 @@ class TrainingConfig:
             raise ValueError("workers.learning_rate must be > 0")
         if w.weight_decay < 0:
             raise ValueError("workers.weight_decay must be >= 0")
+        if w.max_grad_norm <= 0:
+            raise ValueError("workers.max_grad_norm must be > 0")
+        if w.reward_increase_min_delta < 0:
+            raise ValueError("workers.reward_increase_min_delta must be >= 0")
+        if w.require_train_reward_increase and not w.fixed_train_eval:
+            raise ValueError(
+                "workers.require_train_reward_increase requires "
+                "workers.fixed_train_eval=true"
+            )
         if w.eval_interval < 1:
             raise ValueError("workers.eval_interval must be >= 1")
         for name, decode in (

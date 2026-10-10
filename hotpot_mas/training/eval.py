@@ -25,6 +25,7 @@ from .config import DecodeConfig, WorkerTrainingConfig
 from .policy import Policy
 from .prompts_builder import TrainingPrompts
 from .synthesizers import Synthesizer
+from .rollout import pair_reward
 
 
 @dataclass
@@ -40,6 +41,7 @@ class QuestionEval:
     c_raw: str = ""
     c_pred: str = ""
     parsed: Optional[bool] = None  # <FINAL> tag parsed successfully
+    selected_reward: Optional[float] = None
 
 
 @dataclass
@@ -60,11 +62,23 @@ class SplitEvalResult:
             return None
         return sum(q.em for q in self.questions) / len(self.questions)
 
+    @property
+    def mean_selected_reward(self) -> Optional[float]:
+        values = [
+            q.selected_reward
+            for q in self.questions
+            if q.selected_reward is not None
+        ]
+        if len(values) != len(self.questions) or not values:
+            return None
+        return sum(values) / len(values)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "split": self.split,
             "mean_f1": self.mean_f1,
             "mean_em": self.mean_em,
+            "mean_selected_reward": self.mean_selected_reward,
             "num_questions": len(self.questions),
             "reports_from_cache": self.reports_from_cache,
         }
@@ -255,6 +269,13 @@ def evaluate_workers(
             a_report=a_text,
             b_report=b_text,
         )
+        selected_reward = pair_reward(
+            workers_cfg.reward_kind,
+            synthesizer,
+            synth,
+            messages,
+            question.answer,
+        )
         result.questions.append(
             QuestionEval(
                 question_id=question.question_id,
@@ -268,6 +289,7 @@ def evaluate_workers(
                 c_raw=synth.raw_output,
                 c_pred=synth.pred_answer,
                 parsed=synth.parsed,
+                selected_reward=selected_reward,
             )
         )
     if cache is not None:

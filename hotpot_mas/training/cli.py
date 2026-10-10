@@ -99,8 +99,51 @@ def cmd_diagnose_inference(args: argparse.Namespace) -> int:
     cfg = TrainingConfig.from_yaml(args.config, mode=args.mode)
     print(describe_split(cfg))
     load_splits(cfg.manifest_dir)
-    outcome = InferenceDiagnostic(cfg).run()
+    report_cache = Path(args.report_cache) if args.report_cache else None
+    baseline_summary = (
+        Path(args.baseline_summary) if args.baseline_summary else None
+    )
+    outcome = InferenceDiagnostic(
+        cfg,
+        report_cache_path=report_cache,
+        baseline_summary_path=baseline_summary,
+    ).run()
     print("inference diagnostic finished:")
+    for key, value in outcome.items():
+        print(f"  {key}: {value}")
+    return 0
+
+
+def cmd_check_logprobs(args: argparse.Namespace) -> int:
+    from .config import TrainingConfig
+    from .data import describe_split, load_splits
+    from .learner_checks import check_logprob_consistency
+
+    cfg = TrainingConfig.from_yaml(args.config, mode=args.mode)
+    print(describe_split(cfg))
+    load_splits(cfg.manifest_dir)
+    result = check_logprob_consistency(
+        cfg,
+        mean_tolerance=args.mean_tolerance,
+        max_tolerance=args.max_tolerance,
+    )
+    print("log-prob consistency passed:")
+    for key, value in result.items():
+        if key != "sides":
+            print(f"  {key}: {value}")
+    return 0
+
+
+def cmd_compare_rewards(args: argparse.Namespace) -> int:
+    from .config import TrainingConfig
+    from .data import describe_split, load_splits
+    from .reward_comparison import RewardComparison
+
+    cfg = TrainingConfig.from_yaml(args.config, mode=args.mode)
+    print(describe_split(cfg))
+    load_splits(cfg.manifest_dir)
+    outcome = RewardComparison(cfg).run()
+    print("reward comparison finished:")
     for key, value in outcome.items():
         print(f"  {key}: {value}")
     return 0
@@ -133,7 +176,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     train.add_argument("--config", required=True)
     train.add_argument(
-        "--mode", required=True, choices=["trace", "smoke", "pilot", "full"]
+        "--mode",
+        required=True,
+        choices=[
+            "trace",
+            "smoke",
+            "pilot",
+            "full",
+            "overfit",
+            "overfit_f1",
+            "overfit_em",
+            "overfit_gold_mean_log_likelihood",
+        ],
     )
     train.add_argument(
         "--resume", action="store_true",
@@ -166,6 +220,32 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="apply this declared mode override to the config",
     )
+    diagnostic.add_argument(
+        "--report-cache",
+        default=None,
+        help="reuse an existing untrained-worker report cache",
+    )
+    diagnostic.add_argument(
+        "--baseline-summary",
+        default=None,
+        help="compare the new F1 ordering with a previous summary.json",
+    )
+
+    consistency = sub.add_parser(
+        "check-logprobs",
+        help="fail-fast sampling versus teacher-forcing log-prob check",
+    )
+    consistency.add_argument("--config", required=True)
+    consistency.add_argument("--mode", default=None)
+    consistency.add_argument("--mean-tolerance", type=float, default=2.0e-3)
+    consistency.add_argument("--max-tolerance", type=float, default=2.0e-2)
+
+    rewards = sub.add_parser(
+        "compare-rewards",
+        help="compare EM, F1, and gold-answer likelihood rewards",
+    )
+    rewards.add_argument("--config", required=True)
+    rewards.add_argument("--mode", default=None)
     return parser
 
 
@@ -178,6 +258,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "train-synthesizer": cmd_train_synthesizer,
         "render-trace": cmd_render_trace,
         "diagnose-inference": cmd_diagnose_inference,
+        "check-logprobs": cmd_check_logprobs,
+        "compare-rewards": cmd_compare_rewards,
     }
     try:
         return handlers[args.command](args)

@@ -19,6 +19,7 @@ parameters); it lives in ``synthesizers.py``.
 from __future__ import annotations
 
 import hashlib
+import inspect
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Tuple
@@ -86,6 +87,15 @@ class Policy(Protocol):
     ) -> Tensor:
         """Per-token log probs of ``completion_ids`` under the current
         policy, with gradients enabled. Shape ``[T]``."""
+        ...
+
+    def token_log_distributions(
+        self,
+        input_ids: List[int],
+        completion_ids: List[int],
+        decode: Optional[DecodeConfig] = None,
+    ) -> Tensor:
+        """Full-vocabulary log distributions at completion positions."""
         ...
 
     def state_dict(self) -> Dict[str, Tensor]:
@@ -189,6 +199,10 @@ class HFPolicy:
             base_model, LoraConfig(task_type="CAUSAL_LM", **lora_kwargs)
         )
         self.model.to(model_cfg.device)
+        base_forward = self.model.get_base_model().forward
+        self.supports_logits_to_keep = "logits_to_keep" in inspect.signature(
+            base_forward
+        ).parameters
 
         chat_template = getattr(self.tokenizer, "chat_template", None)
         if not chat_template:
@@ -307,6 +321,47 @@ class HFPolicy:
 
     # -- teacher forcing ------------------------------------------------
 
+    def _completion_logits(
+        self, input_ids: List[int], completion_ids: List[int]
+    ) -> Tensor:
+        """Return logits predicting exactly the completion tokens.
+
+        Newer Transformers models accept ``logits_to_keep`` and avoid
+        materializing prompt-position vocabulary logits. The fallback keeps
+        compatibility with older model implementations.
+        """
+        if not completion_ids:
+            raise ValueError("completion_ids must be non-empty")
+        if not input_ids:
+            raise ValueError("input_ids must be non-empty for a causal LM")
+        full = torch.tensor(
+            [input_ids + list(completion_ids)], device=self.device_name
+        )
+        kwargs: Dict[str, Any] = {"input_ids": full}
+        supports_logits_to_keep = getattr(
+            self, "supports_logits_to_keep", False
+        )
+        if supports_logits_to_keep:
+            # Causal logits at position p predict token p+1. Keep one extra
+            # position so the final prompt position can score completion[0],
+            # then discard the logits at the final completion position.
+            kwargs["logits_to_keep"] = len(completion_ids) + 1
+        outputs = self.model(**kwargs)
+        logits = outputs.logits[0].float()
+        if supports_logits_to_keep:
+            if logits.shape[0] != len(completion_ids) + 1:
+                raise RuntimeError(
+                    "model logits_to_keep returned an unexpected sequence length"
+                )
+            return logits[:-1]
+        start = len(input_ids)
+        positions = torch.arange(
+            start - 1,
+            start + len(completion_ids) - 1,
+            device=self.device_name,
+        )
+        return logits[positions]
+
     def teacher_force(
         self,
         input_ids: List[int],
@@ -318,30 +373,27 @@ class HFPolicy:
         Returns shape ``[T]`` with gradients flowing into the LoRA
         parameters only (the base model is frozen).
         """
-        if not completion_ids:
-            raise ValueError("completion_ids must be non-empty")
-        if not input_ids:
-            raise ValueError("input_ids must be non-empty for a causal LM")
         decode = decode or DecodeConfig()
-        full = torch.tensor(
-            [input_ids + list(completion_ids)], device=self.device_name
-        )
-        outputs = self.model(input_ids=full)
-        logits = outputs.logits[0].float()  # [L + T, V]
-        start = len(input_ids)
-        # In a causal LM, logits at position p predict token p + 1.  The
-        # first completion token is therefore scored by the final prompt
-        # position, not by its own position.
-        positions = torch.arange(
-            start - 1,
-            start + len(completion_ids) - 1,
-            device=self.device_name,
-        )
-        behavior_log_probs = _behavior_log_probs(logits[positions], decode)
+        logits = self._completion_logits(input_ids, completion_ids)
+        behavior_log_probs = _behavior_log_probs(logits, decode)
         return behavior_log_probs[
             torch.arange(len(completion_ids), device=self.device_name),
-            full[0, start:],
+            torch.tensor(completion_ids, device=self.device_name),
         ]
+
+    def token_log_distributions(
+        self,
+        input_ids: List[int],
+        completion_ids: List[int],
+        decode: Optional[DecodeConfig] = None,
+    ) -> Tensor:
+        """Full categorical behavior-policy log probabilities, no gradient."""
+        self.model.eval()
+        with torch.inference_mode():
+            logits = self._completion_logits(input_ids, completion_ids)
+            return _behavior_log_probs(
+                logits, decode or DecodeConfig()
+            ).detach()
 
     # -- checkpointing --------------------------------------------------
 

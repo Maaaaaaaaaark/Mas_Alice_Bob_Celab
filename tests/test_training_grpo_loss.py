@@ -96,7 +96,7 @@ class TestPerReportObjectives:
 class TestBatchWeighting:
     def test_batch_objective_is_weighted_sum(self):
         per_report = torch.tensor([0.5, 0.25])
-        # One question with |S_q| = 2: weight 1/(1 * 2) each.
+        # Equal-length reports each own half of the total report tokens.
         weights = torch.tensor([0.5, 0.5])
         assert batch_objective(per_report, weights).item() == pytest.approx(
             0.375
@@ -104,8 +104,8 @@ class TestBatchWeighting:
         assert batch_loss(per_report, weights).item() == pytest.approx(-0.375)
 
     def test_mixed_sq_weighting(self):
-        # Question 1 contributes 2 reports, question 2 contributes 4:
-        # weights 1/(2*2) and 1/(2*4) with |Q| = 2.
+        # Six reports can still sum to a global token mean; these weights
+        # correspond to report lengths [2,2,1,1,1,1] out of 8 tokens.
         per_report = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
         weights = torch.tensor([0.25, 0.25, 0.125, 0.125, 0.125, 0.125])
         assert batch_objective(per_report, weights).item() == pytest.approx(

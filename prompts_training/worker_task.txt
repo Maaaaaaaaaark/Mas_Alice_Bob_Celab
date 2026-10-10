@@ -1,1 +1,1 @@
-$worker_name, provide your one evidence-based report for Celab now. Use the original question and your private evidence. Do not ask Celab a question and do not address the other worker.
+$worker_name, write one short factual report from the passages. Include only information relevant to the question and then stop.

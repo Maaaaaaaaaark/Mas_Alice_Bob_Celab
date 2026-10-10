@@ -10,8 +10,8 @@ Loop outline per update:
 2. Teacher-force every kept report under the current policy and run
    ``num_policy_epochs`` optimizer steps on ``L = -J`` (ratio-clipped
    objective over report tokens only, no KL penalty). The gradient
-   accumulates over minibatches of questions so J keeps the exact TeX
-   weighting ``1/(|Q| |S_q|)`` per report.
+   accumulates over minibatches of questions and is normalized by the total
+   number of retained report tokens.
 3. Periodically evaluate the workers deterministically on the validation
    split (cached per checkpoint step) and keep the best checkpoint by
    validation F1; write one ``metrics.jsonl`` line per update.
@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import statistics
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -72,7 +73,7 @@ class KeptReportEntry:
     old_logp: Tensor  # [T], detached rollout log probs
     mask: Tensor  # [T] float ones (report tokens only)
     advantage: float
-    weight: float  # 1 / (|Q| * |S_q|)
+    weight: float  # report token count / all retained report tokens
 
 
 @dataclass
@@ -94,8 +95,11 @@ class UpdateOutcome:
     signal_counts: Dict[str, int]
     mean_reward: float
     loss: float
-    grad_norm: float
+    grad_norm: float  # before clipping (backward-compatible field)
+    grad_norm_after_clip: float
     approx_kl: float
+    exact_kl_before_update: Optional[float]
+    exact_kl_after_update: Optional[float]
     clip_fraction: float
     entropy: float
     mean_a_tokens: float
@@ -107,6 +111,7 @@ class UpdateOutcome:
     epoch_records: List[EpochRecord] = field(default_factory=list)
     rollouts: List[QuestionRollout] = field(default_factory=list)
     val_result: Optional[SplitEvalResult] = None
+    train_result: Optional[SplitEvalResult] = None
     param_before: Optional[Dict[str, Any]] = None
     param_after: Optional[Dict[str, Any]] = None
 
@@ -148,6 +153,7 @@ class WorkerTrainer:
         existing_run_artifacts = [
             self.stage_dir / "metrics.jsonl",
             self.stage_dir / "trace.json",
+            self.stage_dir / "overfit_metrics.jsonl",
         ] + list(self.stage_dir.glob("step_*"))
         if not resume and any(path.exists() for path in existing_run_artifacts):
             raise RuntimeError(
@@ -178,6 +184,8 @@ class WorkerTrainer:
 
         self.metrics_path = self.stage_dir / "metrics.jsonl"
         self.metrics = JsonlWriter(self.metrics_path)
+        self.overfit_metrics_path = self.stage_dir / "overfit_metrics.jsonl"
+        self.overfit_metrics = JsonlWriter(self.overfit_metrics_path)
 
         self.train_questions = load_questions_for_split(cfg, "train")
         self.val_questions = load_questions_for_split(cfg, "val")
@@ -313,7 +321,10 @@ class WorkerTrainer:
             )
             if rollout.has_signal:
                 rollouts.append(rollout)
-                if "A" in rollout.signal.kept_sides and "B" in rollout.signal.kept_sides:
+                if (
+                    "A" in rollout.signal.kept_sides
+                    and "B" in rollout.signal.kept_sides
+                ):
                     signal_counts["both"] += 1
                 elif "A" in rollout.signal.kept_sides:
                     signal_counts["A"] += 1
@@ -331,6 +342,13 @@ class WorkerTrainer:
         self, rollouts: List[QuestionRollout]
     ) -> List[List[KeptReportEntry]]:
         entries_by_question: List[List[KeptReportEntry]] = []
+        total_tokens = sum(
+            rr.report.num_tokens
+            for rollout in rollouts
+            for rr in rollout.kept_reports
+        )
+        if total_tokens <= 0:
+            raise RuntimeError("GRPO update has no completed report tokens")
         for rollout in rollouts:
             question_entries: List[KeptReportEntry] = []
             for rr in rollout.kept_reports:
@@ -342,8 +360,7 @@ class WorkerTrainer:
                         old_logp=torch.tensor(rr.report.logprobs),
                         mask=torch.ones(len(rr.report.token_ids)),
                         advantage=rr.advantage,
-                        weight=1.0
-                        / (len(rollouts) * len(rollout.kept_reports)),
+                        weight=rr.report.num_tokens / total_tokens,
                     )
                 )
             entries_by_question.append(question_entries)
@@ -351,7 +368,7 @@ class WorkerTrainer:
 
     def _run_epoch(
         self, entries_by_question: List[List[KeptReportEntry]]
-    ) -> Tuple[List[EpochRecord], float, float]:
+    ) -> Tuple[List[EpochRecord], float, float, float]:
         """One policy epoch: accumulate L = -J over question chunks, step."""
         workers = self.cfg.workers
         chunks = _chunk_questions(entries_by_question, workers.minibatch_size)
@@ -417,9 +434,14 @@ class WorkerTrainer:
             loss = batch_loss(objectives, weight_t)
             loss.backward()
             loss_value += float(loss.detach().item())
-        grad_norm = self._grad_norm()
+        grad_norm = float(
+            torch.nn.utils.clip_grad_norm_(
+                self.policy.trainable_parameters(), workers.max_grad_norm
+            ).item()
+        )
+        grad_norm_after_clip = self._grad_norm()
         self.optimizer.step()
-        return records, loss_value, grad_norm
+        return records, loss_value, grad_norm, grad_norm_after_clip
 
     def _grad_norm(self) -> float:
         total = 0.0
@@ -466,6 +488,40 @@ class WorkerTrainer:
         )
         return kl, cf, ent
 
+    def _exact_kl_old_to_new(
+        self,
+        entries_by_question: List[List[KeptReportEntry]],
+        old_state: Dict[str, Tensor],
+        new_state: Dict[str, Tensor],
+    ) -> float:
+        """Exact categorical KL on every retained rollout-token position."""
+        weighted_kl = 0.0
+        total_tokens = 0
+        try:
+            for question_entries in entries_by_question:
+                for entry in question_entries:
+                    rr = entry.rollout_report
+                    self.policy.load_state_dict(old_state)
+                    old_log = self.policy.token_log_distributions(
+                        rr.prompt_ids, rr.report.token_ids, self.cfg.workers.rollout
+                    )
+                    self.policy.load_state_dict(new_state)
+                    new_log = self.policy.token_log_distributions(
+                        rr.prompt_ids, rr.report.token_ids, self.cfg.workers.rollout
+                    )
+                    token_kl = (
+                        old_log.exp() * (old_log - new_log)
+                    ).sum(dim=-1)
+                    # Tiny negative values are floating-point roundoff; KL is
+                    # non-negative mathematically.
+                    token_kl = token_kl.clamp_min(0.0)
+                    weighted_kl += float(token_kl.sum().item())
+                    total_tokens += int(token_kl.numel())
+                    del old_log, new_log, token_kl
+        finally:
+            self.policy.load_state_dict(new_state)
+        return weighted_kl / total_tokens if total_tokens else 0.0
+
     def _apply_grpo_update(
         self,
         step: int,
@@ -477,34 +533,58 @@ class WorkerTrainer:
         workers = self.cfg.workers
         entries_by_question = self._build_entries(rollouts)
         param_before = self.policy.parameter_norm_summary()
+        old_policy_state = self.policy.state_dict()
         epoch_records: List[EpochRecord] = []
         loss_value = 0.0
         grad_norm = 0.0
+        grad_norm_after_clip = 0.0
         for _ in range(workers.num_policy_epochs):
-            records, loss_value, grad_norm = self._run_epoch(
-                entries_by_question
-            )
+            (
+                records,
+                loss_value,
+                grad_norm,
+                grad_norm_after_clip,
+            ) = self._run_epoch(entries_by_question)
             epoch_records = records  # keep the last epoch's values
+        new_policy_state = self.policy.state_dict()
         param_after = self.policy.parameter_norm_summary()
         kl, cf, ent = self._epoch_diagnostics(
             epoch_records, workers.clip_epsilon
         )
+        exact_kl_before = 0.0 if workers.record_exact_kl else None
+        exact_kl_after = (
+            self._exact_kl_old_to_new(
+                entries_by_question, old_policy_state, new_policy_state
+            )
+            if workers.record_exact_kl
+            else None
+        )
 
-        pair_f1s = [
-            pair.synth.f1
+        pair_rewards = [
+            pair.reward
             for rollout in rollouts
             for row in rollout.pairs
             for pair in row
         ]
-        mean_reward = sum(pair_f1s) / len(pair_f1s) if pair_f1s else 0.0
+        mean_reward = (
+            sum(pair_rewards) / len(pair_rewards) if pair_rewards else 0.0
+        )
 
         mean_a_tokens = (
-            sum(rr.report.num_tokens for rollout in rollouts for rr in rollout.a_reports)
+            sum(
+                rr.report.num_tokens
+                for rollout in rollouts
+                for rr in rollout.a_reports
+            )
             / len(rollouts)
             / max(workers.G, 1)
         )
         mean_b_tokens = (
-            sum(rr.report.num_tokens for rollout in rollouts for rr in rollout.b_reports)
+            sum(
+                rr.report.num_tokens
+                for rollout in rollouts
+                for rr in rollout.b_reports
+            )
             / len(rollouts)
             / max(workers.G, 1)
         )
@@ -527,7 +607,10 @@ class WorkerTrainer:
             mean_reward=mean_reward,
             loss=loss_value,
             grad_norm=grad_norm,
+            grad_norm_after_clip=grad_norm_after_clip,
             approx_kl=kl,
+            exact_kl_before_update=exact_kl_before,
+            exact_kl_after_update=exact_kl_after,
             clip_fraction=cf,
             entropy=ent,
             mean_a_tokens=mean_a_tokens,
@@ -547,6 +630,7 @@ class WorkerTrainer:
 
     def _evaluate(self, split: str, step: int) -> SplitEvalResult:
         questions = {
+            "train": self.train_questions,
             "val": self.val_questions,
             "test": self.test_questions,
         }[split]
@@ -583,12 +667,20 @@ class WorkerTrainer:
         workers = self.cfg.workers
         val_f1 = None
         val_em = None
+        train_f1 = None
+        train_em = None
         val_note = None
         if outcome.val_result is not None and outcome.val_result.mean_f1 is not None:
             val_f1 = outcome.val_result.mean_f1
             val_em = outcome.val_result.mean_em
         elif trace_mode:
             val_note = "validation evaluation skipped in trace mode"
+        if (
+            outcome.train_result is not None
+            and outcome.train_result.mean_f1 is not None
+        ):
+            train_f1 = outcome.train_result.mean_f1
+            train_em = outcome.train_result.mean_em
         self.metrics.append(
             {
                 "run_id": f"update-{outcome.step:05d}",
@@ -619,20 +711,50 @@ class WorkerTrainer:
                 ),
                 "insufficient_signal": outcome.insufficient_signal,
                 "mean_reward": outcome.mean_reward,
+                "reward_kind": workers.reward_kind,
                 "mean_val_f1": val_f1,
                 "mean_val_em": val_em,
+                "mean_fixed_train_f1": train_f1,
+                "mean_fixed_train_em": train_em,
                 "val_note": val_note,
                 "mean_a_tokens": outcome.mean_a_tokens,
                 "mean_b_tokens": outcome.mean_b_tokens,
                 "mean_c_tokens": outcome.mean_c_tokens,
                 "loss": outcome.loss,
                 "grad_norm": outcome.grad_norm,
+                "grad_norm_after_clip": outcome.grad_norm_after_clip,
+                "max_grad_norm": workers.max_grad_norm,
                 "approx_kl": outcome.approx_kl,
+                "exact_kl_before_update": outcome.exact_kl_before_update,
+                "exact_kl_after_update": outcome.exact_kl_after_update,
                 "clip_fraction": outcome.clip_fraction,
                 "entropy": outcome.entropy,
                 "num_policy_epochs": workers.num_policy_epochs,
                 "best_val_f1": self.best_val_f1,
                 "checkpoint_path": outcome.checkpoint_path,
+            }
+        )
+
+    def _record_fixed_train_eval(
+        self, step: int, result: SplitEvalResult
+    ) -> None:
+        self.overfit_metrics.append(
+            {
+                "update": step,
+                "num_questions": len(result.questions),
+                "mean_reward_f1": result.mean_f1,
+                "reward_kind": self.cfg.workers.reward_kind,
+                "mean_selected_reward": result.mean_selected_reward,
+                "mean_em": result.mean_em,
+                "mean_a_tokens": statistics.fmean(
+                    q.a_generated_tokens for q in result.questions
+                ) if result.questions else None,
+                "mean_b_tokens": statistics.fmean(
+                    q.b_generated_tokens for q in result.questions
+                ) if result.questions else None,
+                "mean_c_tokens": statistics.fmean(
+                    q.c_generated_tokens for q in result.questions
+                ) if result.questions else None,
             }
         )
 
@@ -752,6 +874,8 @@ class WorkerTrainer:
                         "precision": pair.synth.precision,
                         "recall": pair.synth.recall,
                         "f1": pair.synth.f1,
+                        "selected_reward": pair.reward,
+                        "reward_kind": workers.reward_kind,
                         "input_tokens": pair.synth.input_tokens,
                         "generated_tokens": pair.synth.generated_tokens,
                         "finish_reason": pair.synth.finish_reason,
@@ -854,10 +978,15 @@ class WorkerTrainer:
             },
             loss={"per_report": loss_entries, "J": J, "L": -J},
             diagnostics={
+                "reward_kind": workers.reward_kind,
                 "approx_kl": outcome.approx_kl,
+                "exact_kl_before_update": outcome.exact_kl_before_update,
+                "exact_kl_after_update": outcome.exact_kl_after_update,
                 "clip_fraction": outcome.clip_fraction,
                 "entropy": outcome.entropy,
                 "grad_norm": outcome.grad_norm,
+                "grad_norm_after_clip": outcome.grad_norm_after_clip,
+                "max_grad_norm": workers.max_grad_norm,
                 "learning_rate": workers.learning_rate,
                 "num_policy_epochs": workers.num_policy_epochs,
                 "delta": workers.delta,
@@ -896,6 +1025,21 @@ class WorkerTrainer:
         ):
             self._record_step0_baseline()
 
+        if (
+            workers.fixed_train_eval
+            and self.start_step == 0
+            and not self.overfit_metrics_path.exists()
+        ):
+            train_baseline = self._evaluate("train", 0)
+            self._record_fixed_train_eval(0, train_baseline)
+            logger.info(
+                "fixed-train baseline: %s reward %.4f (F1 %.4f, EM %.4f)",
+                workers.reward_kind,
+                train_baseline.mean_selected_reward or 0.0,
+                train_baseline.mean_f1 or 0.0,
+                train_baseline.mean_em or 0.0,
+            )
+
         final_outcomes: List[UpdateOutcome] = []
         for step in range(self.start_step + 1, workers.steps + 1):
             rollouts, attempted, discarded, signal_counts = (
@@ -916,6 +1060,20 @@ class WorkerTrainer:
                 step, rollouts, attempted, discarded, signal_counts
             )
             final_outcomes.append(outcome)
+
+            if workers.fixed_train_eval:
+                train_result = self._evaluate("train", step)
+                outcome.train_result = train_result
+                self._record_fixed_train_eval(step, train_result)
+                logger.info(
+                    "update %d: fixed-train %s reward %.4f "
+                    "(F1 %.4f, EM %.4f)",
+                    step,
+                    workers.reward_kind,
+                    train_result.mean_selected_reward or 0.0,
+                    train_result.mean_f1 or 0.0,
+                    train_result.mean_em or 0.0,
+                )
 
             # Periodic (and final) validation evaluation, before the
             # checkpoint is written so state.json records the best val F1
@@ -956,6 +1114,45 @@ class WorkerTrainer:
                 )
 
             self._write_metrics(outcome, trace_mode)
+
+        overfit_result: Optional[Dict[str, Any]] = None
+        if workers.fixed_train_eval:
+            progress = [
+                json.loads(line)
+                for line in self.overfit_metrics_path.read_text(
+                    encoding="utf-8"
+                ).splitlines()
+                if line.strip()
+            ]
+            baseline_reward = float(progress[0]["mean_selected_reward"])
+            post_rewards = [
+                float(row["mean_selected_reward"])
+                for row in progress
+                if int(row["update"]) > 0
+            ]
+            best_post_reward = max(post_rewards) if post_rewards else baseline_reward
+            required = baseline_reward + workers.reward_increase_min_delta
+            passed = bool(post_rewards) and best_post_reward > required
+            overfit_result = {
+                "reward_kind": workers.reward_kind,
+                "baseline_selected_reward": baseline_reward,
+                "best_post_update_selected_reward": best_post_reward,
+                "delta": best_post_reward - baseline_reward,
+                "required_delta_strictly_greater_than": (
+                    workers.reward_increase_min_delta
+                ),
+                "passed": passed,
+                "progress_path": str(self.overfit_metrics_path),
+            }
+            (self.stage_dir / "overfit_result.json").write_text(
+                json.dumps(overfit_result, indent=2), encoding="utf-8"
+            )
+            if workers.require_train_reward_increase and not passed:
+                raise RuntimeError(
+                    "learner overfit gate failed: fixed-train reward did not "
+                    f"increase (baseline={baseline_reward:.6f}, "
+                    f"best_post={best_post_reward:.6f})"
+                )
 
         # Final test evaluation uses the validation-selected policy, not
         # merely the parameters from the final optimization step.
@@ -1032,4 +1229,5 @@ class WorkerTrainer:
                 if trace_mode
                 else None
             ),
+            "overfit_result": overfit_result,
         }

@@ -14,6 +14,8 @@ reward/evaluation target.
 from __future__ import annotations
 
 import hashlib
+import inspect
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Tuple
@@ -94,6 +96,9 @@ class HFSynthesizer:
         )
         self.model.eval()
         self.model.to(model_cfg.device)
+        self.supports_logits_to_keep = "logits_to_keep" in inspect.signature(
+            self.model.forward
+        ).parameters
 
         # Resolved EOS ids, same rule as HFEngine.
         eos_ids = set()
@@ -125,6 +130,79 @@ class HFSynthesizer:
         )
         return [int(i) for i in ids]
 
+    def _prefix_ids(self) -> List[int]:
+        if not self.decode_cfg.answer_prefix:
+            return []
+        return [
+            int(value)
+            for value in self.tokenizer.encode(
+                self.decode_cfg.answer_prefix,
+                add_special_tokens=False,
+            )
+        ]
+
+    @staticmethod
+    def _strip_answer_labels(text: str) -> str:
+        """Remove protocol labels without changing answer-internal text."""
+        cleaned = text.strip().splitlines()[0].strip() if text.strip() else ""
+        label = re.compile(r"^(?:answer|celab|reader)\s*:\s*", re.IGNORECASE)
+        while label.match(cleaned):
+            cleaned = label.sub("", cleaned, count=1).strip()
+        final = extract_final_answer(cleaned)
+        if final.action == "final" and final.body is not None:
+            cleaned = final.body.strip()
+        return cleaned
+
+    def _decode_constrained(
+        self, prompt_ids: List[int]
+    ) -> Tuple[str, List[int], str, int]:
+        """Greedy continuation after a fixed prefix, optionally to newline."""
+        import torch
+        from transformers import StoppingCriteria, StoppingCriteriaList
+
+        prefix_ids = self._prefix_ids()
+        model_input = prompt_ids + prefix_ids
+        input_ids = torch.tensor([model_input], device=self.device_name)
+        stop_state: Dict[str, bool] = {"newline": False}
+
+        class StopAtNewline(StoppingCriteria):
+            def __call__(inner_self, generated_ids, scores, **kwargs):
+                continuation = generated_ids[0, len(model_input):].tolist()
+                text = self.tokenizer.decode(
+                    continuation, skip_special_tokens=True
+                )
+                found = "\n" in text or "\r" in text
+                stop_state["newline"] = found
+                return found
+
+        stopping = None
+        if self.decode_cfg.stop_on_newline:
+            stopping = StoppingCriteriaList([StopAtNewline()])
+        with torch.inference_mode():
+            outputs = self.model.generate(
+                input_ids,
+                do_sample=False,
+                max_new_tokens=self.decode_cfg.max_new_tokens,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.resolved_eos_ids or None,
+                use_cache=True,
+                stopping_criteria=stopping,
+            )
+        generated = outputs[0][len(model_input):].tolist()
+        continuation = self.tokenizer.decode(
+            generated, skip_special_tokens=True
+        )
+        if self.decode_cfg.stop_on_newline:
+            continuation = re.split(r"[\r\n]", continuation, maxsplit=1)[0]
+        raw_output = self.decode_cfg.answer_prefix + continuation
+        if stop_state["newline"]:
+            finish_reason = "newline"
+        elif generated and generated[-1] in self.resolved_eos_ids:
+            finish_reason = "eos"
+        else:
+            finish_reason = "length"
+        return raw_output, generated, finish_reason, len(model_input)
+
     def answer(
         self,
         messages: List[Dict[str, str]],
@@ -140,39 +218,26 @@ class HFSynthesizer:
         # models that contain dropout.
         self.model.eval()
         prompt_ids = self.tokenize(messages)
-        if len(prompt_ids) > self.max_input_length:
+        full_prompt_length = len(prompt_ids) + len(self._prefix_ids())
+        if full_prompt_length > self.max_input_length:
             raise RuntimeError(
-                f"C input length {len(prompt_ids)} exceeds "
+                f"C input length {full_prompt_length} exceeds "
                 f"max_input_length {self.max_input_length}"
             )
-        input_ids = torch.tensor(
-            [prompt_ids], device=self.device_name
+        raw_output, generated, finish_reason, input_length = (
+            self._decode_constrained(prompt_ids)
         )
-        with torch.inference_mode():
-            outputs = self.model.generate(
-                input_ids,
-                do_sample=False,
-                max_new_tokens=self.decode_cfg.max_new_tokens,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.resolved_eos_ids or None,
-                use_cache=True,
-            )
-        generated = outputs[0][len(prompt_ids):].tolist()
-        finish_reason = (
-            "eos"
-            if generated and generated[-1] in self.resolved_eos_ids
-            else "length"
-        )
-        raw_output = self.tokenizer.decode(
-            generated, skip_special_tokens=True
-        )
-        parsed = extract_final_answer(raw_output)
-        if parsed.status == "ok" and parsed.body is not None:
-            pred_answer = parsed.body
-            parsed_ok = True
+        if self.decode_cfg.strip_answer_labels:
+            pred_answer = self._strip_answer_labels(raw_output)
+            parsed_ok = bool(pred_answer)
         else:
-            pred_answer = raw_output
-            parsed_ok = False
+            parsed = extract_final_answer(raw_output)
+            if parsed.action == "final" and parsed.body is not None:
+                pred_answer = parsed.body
+                parsed_ok = True
+            else:
+                pred_answer = raw_output
+                parsed_ok = False
         precision, recall, f1 = token_overlap_scores(pred_answer, gold)
         return SynthResult(
             question=question,
@@ -185,7 +250,7 @@ class HFSynthesizer:
             precision=precision,
             recall=recall,
             f1=f1,
-            input_tokens=len(prompt_ids),
+            input_tokens=input_length,
             generated_tokens=len(generated),
             finish_reason=finish_reason,
         )
@@ -197,10 +262,62 @@ class HFSynthesizer:
             "frozen": True,
             "decode": "greedy (do_sample=False)",
             "max_new_tokens": self.decode_cfg.max_new_tokens,
+            "answer_prefix": self.decode_cfg.answer_prefix,
+            "stop_on_newline": self.decode_cfg.stop_on_newline,
+            "strip_answer_labels": self.decode_cfg.strip_answer_labels,
             "device": self.device_name,
             "max_input_length": self.max_input_length,
             "chat_template_sha256": self.chat_template_sha256,
             "resolved_eos_ids": self.resolved_eos_ids,
+        }
+
+    def gold_answer_log_likelihood(
+        self,
+        messages: List[Dict[str, str]],
+        gold: str,
+    ) -> Dict[str, Any]:
+        """Teacher-forced gold likelihood after the configured prefix."""
+        self.model.eval()
+        prompt_ids = self.tokenize(messages) + self._prefix_ids()
+        answer_text = (" " if self.decode_cfg.answer_prefix else "") + gold.strip()
+        answer_ids = [
+            int(value)
+            for value in self.tokenizer.encode(
+                answer_text, add_special_tokens=False
+            )
+        ]
+        if not answer_ids:
+            raise ValueError("gold answer tokenized to an empty sequence")
+        if len(prompt_ids) + len(answer_ids) > self.max_input_length:
+            raise RuntimeError("gold-likelihood input exceeds max_input_length")
+        full = torch.tensor(
+            [prompt_ids + answer_ids], device=self.device_name
+        )
+        with torch.inference_mode():
+            if self.supports_logits_to_keep:
+                logits = self.model(
+                    input_ids=full,
+                    logits_to_keep=len(answer_ids) + 1,
+                ).logits[0].float()[:-1]
+            else:
+                all_logits = self.model(input_ids=full).logits[0].float()
+                start = len(prompt_ids)
+                positions = torch.arange(
+                    start - 1,
+                    start + len(answer_ids) - 1,
+                    device=self.device_name,
+                )
+                logits = all_logits[positions]
+            log_probs = torch.log_softmax(logits, dim=-1)
+            targets = torch.tensor(answer_ids, device=self.device_name)
+            token_log_probs = log_probs[
+                torch.arange(len(answer_ids), device=self.device_name), targets
+            ]
+        return {
+            "token_log_probs": token_log_probs.detach().cpu().tolist(),
+            "num_answer_tokens": len(answer_ids),
+            "sum_log_likelihood": float(token_log_probs.sum().item()),
+            "mean_log_likelihood": float(token_log_probs.mean().item()),
         }
 
 

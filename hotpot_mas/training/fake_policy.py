@@ -72,6 +72,7 @@ class FakePolicy:
         self,
         tokenizer: Optional[FakeTokenizer] = None,
         init_logits: Optional[Tensor] = None,
+        force_completed_reports: bool = True,
     ):
         self.tokenizer = tokenizer or FakeTokenizer()
         vocab_size = len(self.tokenizer.vocab)
@@ -84,6 +85,7 @@ class FakePolicy:
                 )
             self.logits = nn.Parameter(init_logits.clone())
         self._calls: List[str] = []
+        self.force_completed_reports = force_completed_reports
 
     # -- tokenizer surface ----------------------------------------------
 
@@ -126,7 +128,9 @@ class FakePolicy:
             token_ids=ids,
             text=self.decode(ids),
             logprobs=logprobs,
-            finish_reason=finish_reason,
+            finish_reason=(
+                "eos" if self.force_completed_reports else finish_reason
+            ),
         )
 
     def sample_report(
@@ -163,6 +167,19 @@ class FakePolicy:
             completion_ids, device=self.logits.device, dtype=torch.long
         )
         return log_probs[index]
+
+    def token_log_distributions(
+        self,
+        input_ids: List[int],
+        completion_ids: List[int],
+        decode: Optional[DecodeConfig] = None,
+    ) -> Tensor:
+        if not completion_ids:
+            raise ValueError("completion_ids must be non-empty")
+        log_probs = _behavior_log_probs(
+            self.logits.detach(), decode or DecodeConfig()
+        )
+        return log_probs.unsqueeze(0).repeat(len(completion_ids), 1)
 
     # -- parameter bookkeeping ------------------------------------------
 

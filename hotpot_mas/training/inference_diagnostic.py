@@ -64,6 +64,24 @@ def literal_string_present(text: str, gold: str) -> bool:
     return bool(needle) and needle in haystack
 
 
+def prompt_echo_present(text: str) -> bool:
+    """Conservative detector for recognizable instruction repetition."""
+    normalized = normalize_answer(str(text or ""))
+    phrases = (
+        "you are evidence worker",
+        "original question",
+        "private passages",
+        "some passages may be unrelated",
+        "identify entities and relations",
+        "preserve exact names dates and numbers",
+        "do not speculate",
+        "repeat instructions",
+        "write one short factual report",
+        "include only information relevant",
+    )
+    return any(normalize_answer(phrase) in normalized for phrase in phrases)
+
+
 def _render_document(document: Mapping[str, Any]) -> str:
     return f"Title: {document['title']}\n{document['paragraph']}"
 
@@ -104,6 +122,30 @@ def direct_reader_messages(
             "role": "system",
             "content": prompt_set.render("direct_reader_system"),
         },
+        {
+            "role": "user",
+            "content": (
+                "Question:\nIs the stated claim true?\n\n"
+                "Candidate documents:\nThe document explicitly confirms the claim."
+            ),
+        },
+        {"role": "assistant", "content": "Answer: yes"},
+        {
+            "role": "user",
+            "content": (
+                "Question:\nIn what year did the event occur?\n\n"
+                "Candidate documents:\nThe event occurred in 1969."
+            ),
+        },
+        {"role": "assistant", "content": "Answer: 1969"},
+        {
+            "role": "user",
+            "content": (
+                "Question:\nIs the object made of wood?\n\n"
+                "Candidate documents:\nIt is made of metal, not wood."
+            ),
+        },
+        {"role": "assistant", "content": "Answer: no"},
         {
             "role": "user",
             "content": (
@@ -168,6 +210,17 @@ def summarize_records(
             "mean_normalized_answer_words": statistics.fmean(
                 float(row["normalized_answer_words"]) for row in rows
             ) if rows else None,
+            "mean_gold_answer_words": statistics.fmean(
+                len(normalize_answer(str(row["gold_answer"])).split())
+                for row in rows
+            ) if rows else None,
+            "mean_absolute_answer_word_error": statistics.fmean(
+                abs(
+                    float(row["normalized_answer_words"])
+                    - len(normalize_answer(str(row["gold_answer"])).split())
+                )
+                for row in rows
+            ) if rows else None,
         }
 
     worker_rows = grouped["untrained_worker_reports"]
@@ -196,13 +249,62 @@ def summarize_records(
             float(bool(row["bob_contains_normalized_gold"]))
             for row in worker_rows
         ) if worker_rows else None,
+        "alice_prompt_echo_rate": statistics.fmean(
+            float(bool(row.get("alice_prompt_echo", False)))
+            for row in worker_rows
+        ) if worker_rows else None,
+        "bob_prompt_echo_rate": statistics.fmean(
+            float(bool(row.get("bob_prompt_echo", False)))
+            for row in worker_rows
+        ) if worker_rows else None,
     }
+    f1_order = sorted(
+        CONDITIONS,
+        key=lambda name: float(conditions[name]["mean_f1"] or 0.0),
+        reverse=True,
+    )
+    core_order_matches = (
+        float(conditions["gold_supporting_documents"]["mean_f1"] or 0.0)
+        > float(conditions["untrained_worker_reports"]["mean_f1"] or 0.0)
+        > float(conditions["empty_reports"]["mean_f1"] or 0.0)
+    )
+    answer_length_close = all(
+        (
+            float(conditions[name]["mean_absolute_answer_word_error"] or 0.0)
+            <= 2.0
+            and float(conditions[name]["mean_normalized_answer_words"] or 0.0)
+            <= float(conditions[name]["mean_gold_answer_words"] or 0.0) + 2.0
+        )
+        for name in CONDITIONS
+    )
     return {
         "expected_questions": expected_questions,
         "complete": all(
             conditions[condition]["complete"] for condition in CONDITIONS
         ),
         "conditions": conditions,
+        "f1_order_best_to_worst": f1_order,
+        "expected_core_f1_order_best_to_worst": [
+            "gold_supporting_documents",
+            "untrained_worker_reports",
+            "empty_reports",
+        ],
+        "single_agent_order_note": (
+            "single_agent_all_documents is a separate reference and is "
+            "reported, not forced above the oracle two-document condition"
+        ),
+        "acceptance": {
+            "all_parse_rates_at_least_0_95": all(
+                float(conditions[name]["parse_success_rate"] or 0.0) >= 0.95
+                for name in CONDITIONS
+            ),
+            "all_em_strictly_positive": all(
+                float(conditions[name]["mean_em"] or 0.0) > 0.0
+                for name in CONDITIONS
+            ),
+            "answer_length_close_to_gold": answer_length_close,
+            "core_f1_order_matches_expected_table": core_order_matches,
+        },
         "untrained_worker_gold_answer_containment": containment,
     }
 
@@ -245,6 +347,21 @@ def render_summary(summary: Mapping[str, Any]) -> str:
             f"- Alice: {containment['alice_gold_string_rate']}",
             f"- Bob: {containment['bob_gold_string_rate']}",
             f"- Either worker: {containment['either_worker_gold_string_rate']}",
+            f"- Alice prompt echo: {containment['alice_prompt_echo_rate']}",
+            f"- Bob prompt echo: {containment['bob_prompt_echo_rate']}",
+            "",
+            "## Acceptance checks",
+            "",
+            f"- F1 order (best to worst): "
+            f"{summary['f1_order_best_to_worst']}",
+            f"- Parse rate >= 95%: "
+            f"{summary['acceptance']['all_parse_rates_at_least_0_95']}",
+            f"- EM > 0 in every condition: "
+            f"{summary['acceptance']['all_em_strictly_positive']}",
+            f"- Answer length close to gold: "
+            f"{summary['acceptance']['answer_length_close_to_gold']}",
+            f"- Core order oracle > worker > empty: "
+            f"{summary['acceptance']['core_f1_order_matches_expected_table']}",
             "",
         ]
     )
@@ -254,18 +371,26 @@ def render_summary(summary: Mapping[str, Any]) -> str:
 class InferenceDiagnostic:
     """Resumable runner for the four inference-only conditions."""
 
-    def __init__(self, cfg: TrainingConfig):
+    def __init__(
+        self,
+        cfg: TrainingConfig,
+        report_cache_path: Path | None = None,
+        baseline_summary_path: Path | None = None,
+    ):
         self.cfg = cfg
         self.output_dir = cfg.stage_dir()
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.results_path = self.output_dir / "per_question.jsonl"
         self.report_cache = EvalReportCache(
-            self.output_dir / "untrained_worker_reports.json"
+            report_cache_path
+            if report_cache_path is not None
+            else self.output_dir / "untrained_worker_reports.json"
         )
         self.prompts = TrainingPrompts(cfg.prompt_dir)
         self.reader_prompts = PromptSet(
             cfg.prompt_dir, ("direct_reader_system",)
         )
+        self.baseline_summary_path = baseline_summary_path
 
     def _ensure_untrained_reports(
         self, questions: List[SelectedQuestion]
@@ -419,6 +544,8 @@ class InferenceDiagnostic:
                             "bob_contains_normalized_gold": normalized_span_present(
                                 b_text, question.answer
                             ),
+                            "alice_prompt_echo": prompt_echo_present(a_text),
+                            "bob_prompt_echo": prompt_echo_present(b_text),
                         }
                     )
                 _append_jsonl(self.results_path, record)
@@ -434,6 +561,24 @@ class InferenceDiagnostic:
                 )
 
         summary = summarize_records(existing.values(), expected)
+        if self.baseline_summary_path is not None:
+            baseline = json.loads(
+                self.baseline_summary_path.read_text(encoding="utf-8")
+            )
+            baseline_order = baseline.get("f1_order_best_to_worst")
+            if baseline_order is None:
+                baseline_conditions = baseline["conditions"]
+                baseline_order = sorted(
+                    CONDITIONS,
+                    key=lambda name: float(
+                        baseline_conditions[name]["mean_f1"] or 0.0
+                    ),
+                    reverse=True,
+                )
+            summary["baseline_f1_order_best_to_worst"] = baseline_order
+            summary["f1_order_matches_baseline"] = (
+                summary["f1_order_best_to_worst"] == baseline_order
+            )
         summary.update(
             {
                 "config": self.cfg.to_dict(),
@@ -442,6 +587,11 @@ class InferenceDiagnostic:
                 "direct_reader_prompt_hashes": self.reader_prompts.hashes,
                 "results_path": str(self.results_path),
                 "worker_report_cache": str(self.report_cache.cache_path),
+                "baseline_summary_path": (
+                    str(self.baseline_summary_path)
+                    if self.baseline_summary_path is not None
+                    else None
+                ),
             }
         )
         summary_path = self.output_dir / "summary.json"

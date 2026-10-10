@@ -8,6 +8,7 @@ from hotpot_mas.training.inference_diagnostic import (
     gold_supporting_reports,
     literal_string_present,
     normalized_span_present,
+    prompt_echo_present,
     render_summary,
     summarize_records,
 )
@@ -64,6 +65,7 @@ def test_summary_has_four_conditions_and_separate_worker_rates():
     for condition in CONDITIONS:
         record = {
             "question_id": "q1",
+            "gold_answer": "October 1922",
             "condition": condition,
             "f1": 0.5,
             "em": 0.0,
@@ -87,3 +89,8 @@ def test_summary_has_four_conditions_and_separate_worker_rates():
     assert containment["alice_gold_string_rate"] == 1.0
     assert containment["bob_gold_string_rate"] == 0.0
     assert "全部 10 篇文档" in render_summary(summary)
+
+
+def test_prompt_echo_detector_is_conservative():
+    assert prompt_echo_present("Do not speculate or repeat instructions.")
+    assert not prompt_echo_present("The war ended in October 1922.")

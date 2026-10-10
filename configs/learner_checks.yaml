@@ -1,0 +1,97 @@
+# Fail-fast learner verification. The Slurm script first checks sampled
+# log-probabilities against an immediate full-sequence recomputation. Only if
+# that passes does it repeatedly train/evaluate on the same 32 questions.
+experiment_id: learner_checks
+experiment_version: overfit32
+seed: 0
+output_dir: outputs/learner_checks
+manifest_dir: outputs/training_manifests/learner_checks_overfit32
+prompt_dir: prompts_training
+
+data:
+  dataset: hotpot_qa
+  dataset_config: distractor
+  train:
+    split: train
+    num_questions: 32
+    selection_seed: 0
+  val:
+    split: validation
+    num_questions: 16
+    selection_seed: 1
+  test:
+    split: validation
+    num_questions: 16
+    selection_seed: 2
+  partition_seed: 0
+  val_test_split_seed: 0
+
+model:
+  name: google/gemma-3-1b-it
+  revision: null
+  dtype: bfloat16
+  device: cuda
+  attn_implementation: null
+  max_input_length: 30000
+  peft:
+    r: 16
+    alpha: 32
+    dropout: 0.0
+    target_modules: null
+
+workers:
+  G: 2
+  # The run mode overrides this. The Slurm script requires REWARD_KIND, so
+  # the learner check cannot accidentally run before reward selection.
+  reward_kind: f1
+  delta: 0.05
+  eps_n: 1.0e-6
+  clip_epsilon: 0.2
+  num_policy_epochs: 1
+  minibatch_size: 1
+  max_sampling_attempts: 160
+  learning_rate: 1.0e-5
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  record_exact_kl: true
+  fixed_train_eval: true
+  require_train_reward_increase: true
+  reward_increase_min_delta: 0.0
+  questions_per_update: 4
+  steps: 12
+  eval_interval: 4
+  step0_eval: false
+  final_test_eval: false
+  fail_on_insufficient_signal: true
+  rollout:
+    do_sample: true
+    temperature: 0.6
+    top_p: 1.0
+    max_new_tokens: 96
+  eval_decode:
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0
+    max_new_tokens: 96
+  synthesizer_decode:
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0
+    max_new_tokens: 16
+    answer_prefix: "Answer:"
+    stop_on_newline: true
+    strip_answer_labels: true
+
+modes:
+  overfit_f1:
+    experiment_version: overfit32_f1
+    workers:
+      reward_kind: f1
+  overfit_em:
+    experiment_version: overfit32_em
+    workers:
+      reward_kind: em
+  overfit_gold_mean_log_likelihood:
+    experiment_version: overfit32_gold_mean_log_likelihood
+    workers:
+      reward_kind: gold_mean_log_likelihood

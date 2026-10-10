@@ -77,6 +77,15 @@ class TestRollout:
         )
         assert rollout.reward_matrix() == [[1.0, 1.0], [0.0, 0.0]]
 
+    def test_em_can_be_selected_as_training_reward(
+        self, question, prompts, workers
+    ):
+        workers.reward_kind = "em"
+        rollout, _, _ = run_rollout(
+            question, prompts, workers, {question.question: MATRIX_A_ONLY}
+        )
+        assert rollout.reward_matrix() == [[1.0, 1.0], [0.0, 0.0]]
+
     def test_a_only_signal_keeps_only_a(self, question, prompts, workers):
         rollout, _, _ = run_rollout(
             question, prompts, workers, {question.question: MATRIX_A_ONLY}
@@ -221,3 +230,33 @@ class TestEmptyReportExclusion:
         assert len(rollout.excluded_empty_reports) == 1
         assert rollout.excluded_empty_reports[0]["reason"] == "empty_report"
         assert all(rr.report.token_ids for rr in rollout.kept_reports)
+
+    def test_truncated_report_is_never_used_for_policy_gradient(
+        self, question, prompts, workers
+    ):
+        from hotpot_mas.training.policy import Report
+
+        class AlwaysTruncatedPolicy(FakePolicy):
+            def sample_report(self, messages, generation_seed, decode):
+                return Report(
+                    token_ids=[0],
+                    text="w0",
+                    logprobs=[-1.0],
+                    finish_reason="length",
+                )
+
+        policy = AlwaysTruncatedPolicy()
+        workers.rollout.max_new_tokens = 1
+        rollout, _, _ = run_rollout(
+            question,
+            prompts,
+            workers,
+            {question.question: MATRIX_A_ONLY},
+            policy=policy,
+        )
+        assert rollout.signal.kept_sides == ["A"]
+        assert rollout.kept_reports == []
+        assert len(rollout.excluded_empty_reports) == workers.G
+        assert {
+            item["reason"] for item in rollout.excluded_empty_reports
+        } == {"truncated_at_max_new_tokens"}

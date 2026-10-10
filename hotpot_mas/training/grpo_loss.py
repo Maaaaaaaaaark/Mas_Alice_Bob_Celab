@@ -6,7 +6,7 @@ against hand-computed values in unit tests:
 
     rho_t   = pi_theta(o_t | x, o_<t) / pi_old(o_t | x, o_<t)
     ell_t   = min(rho_t * u, clip(rho_t, 1 - eps, 1 + eps) * u)
-    J       = (1/|Q|) sum_q (1/|S_q|) sum_{(x, o, u) in S_q} (1/|o|) sum_t ell_t
+    J       = (1/N_tokens) sum_{q,o,t} ell_t
     L       = -J
 
 Only worker report tokens carry loss: prompt/question/document tokens are
@@ -17,8 +17,9 @@ specification requires.
 
 All functions take ``new_logps``/``old_logps`` of shape ``[B, T]`` and a
 float mask of the same shape (1 on report tokens, 0 elsewhere); advantages
-are shape ``[B]``. Per-report quantities are returned as ``[B]`` so the
-trainer can average them with the exact TeX weighting ``1/(|Q| |S_q|)``.
+are shape ``[B]``. Per-report quantities are returned as ``[B]``. The trainer
+weights each report by its fraction of all active report tokens, making the
+final loss one mean over tokens rather than a mean over reports.
 """
 
 from __future__ import annotations
@@ -80,8 +81,9 @@ def batch_objective(
 ) -> Tensor:
     """Weighted batch objective ``J = sum_i weight_i * per_report_i``.
 
-    The caller supplies weights already containing the ``1/(|Q| |S_q|)``
-    factors (gradient accumulation across minibatches keeps J TeX-exact).
+    The caller supplies ``report_token_count / total_token_count`` weights.
+    Combined with each report's token mean, this is exactly one global mean
+    over all report tokens and introduces no inverse-length report weighting.
     """
     if per_report.shape != weights.shape:
         raise ValueError("per_report and weights shapes must match")

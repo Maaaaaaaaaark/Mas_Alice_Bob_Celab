@@ -75,5 +75,32 @@ class TrainingPrompts:
         )
         return [
             {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": (
+                    "Original question:\nIs the stated claim true?\n\n"
+                    "Report from Alice:\nThe evidence explicitly confirms the claim.\n\n"
+                    "Report from Bob:\nNo conflicting information is reported."
+                ),
+            },
+            {"role": "assistant", "content": "Answer: yes"},
+            {
+                "role": "user",
+                "content": (
+                    "Original question:\nIn what year did the event occur?\n\n"
+                    "Report from Alice:\nThe event occurred in 1969.\n\n"
+                    "Report from Bob:\nThe report discusses the same event."
+                ),
+            },
+            {"role": "assistant", "content": "Answer: 1969"},
+            {
+                "role": "user",
+                "content": (
+                    "Original question:\nIs the object made of wood?\n\n"
+                    "Report from Alice:\nIt is described as being made of metal.\n\n"
+                    "Report from Bob:\nNo source describes it as wooden."
+                ),
+            },
+            {"role": "assistant", "content": "Answer: no"},
             {"role": "user", "content": user},
         ]

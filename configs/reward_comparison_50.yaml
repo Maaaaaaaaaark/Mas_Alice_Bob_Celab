@@ -41,7 +41,10 @@ workers:
     do_sample: true
     temperature: 0.6
     top_p: 1.0
-    max_new_tokens: 96
+    # A 96-token cap caused some reports to be rejected as truncated on every
+    # retry. Keep the completed-report requirement, but give the model enough
+    # room to emit EOS naturally.
+    max_new_tokens: 256
   eval_decode:
     do_sample: false
     temperature: 0.0

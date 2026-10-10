@@ -202,6 +202,7 @@ class RewardComparison:
         seed_all(self.cfg.seed)
         policy = HFPolicy(self.cfg.model)
         g = self.cfg.workers.G
+        max_attempts = self.cfg.workers.max_sampling_attempts
         for q_index, question in enumerate(missing, 1):
             entry: Dict[str, List[Dict[str, Any]]] = {"a": [], "b": []}
             for side, evidence, key in (
@@ -214,7 +215,7 @@ class RewardComparison:
                     evidence,
                 )
                 attempt = 0
-                while len(entry[key]) < g and attempt < g * 20:
+                while len(entry[key]) < g and attempt < max_attempts:
                     seed = derive_generation_seed(
                         self.cfg.seed,
                         f"reward-compare:{question.question_id}:{side}",
@@ -243,7 +244,10 @@ class RewardComparison:
                 if len(entry[key]) != g:
                     raise RuntimeError(
                         f"could not obtain {g} completed {side} reports for "
-                        f"{question.question_id} in {g * 20} attempts"
+                        f"{question.question_id} in {max_attempts} attempts; "
+                        f"all rejected reports were empty or ended at the "
+                        f"configured max_new_tokens="
+                        f"{self.cfg.workers.rollout.max_new_tokens} before EOS"
                     )
             cache[question.question_id] = entry
             _save_json(self.cache_path, cache)

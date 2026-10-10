@@ -10,6 +10,8 @@ Subcommands:
   frozen best Stage 1 workers (trace / smoke).
 - ``render-trace``: regenerate ``worked_example.md`` from an existing
   ``trace.json`` (no model, no GPU).
+- ``diagnose-inference``: run the four-condition validation diagnostic
+  without training or loading a trained checkpoint.
 """
 
 from __future__ import annotations
@@ -89,6 +91,21 @@ def cmd_render_trace(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_diagnose_inference(args: argparse.Namespace) -> int:
+    from .config import TrainingConfig
+    from .data import describe_split, load_splits
+    from .inference_diagnostic import InferenceDiagnostic
+
+    cfg = TrainingConfig.from_yaml(args.config, mode=args.mode)
+    print(describe_split(cfg))
+    load_splits(cfg.manifest_dir)
+    outcome = InferenceDiagnostic(cfg).run()
+    print("inference diagnostic finished:")
+    for key, value in outcome.items():
+        print(f"  {key}: {value}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m hotpot_mas.training.cli",
@@ -138,6 +155,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     render.add_argument("--trace", required=True)
     render.add_argument("--output", default=None)
+
+    diagnostic = sub.add_parser(
+        "diagnose-inference",
+        help="inference-only four-condition validation diagnostic",
+    )
+    diagnostic.add_argument("--config", required=True)
+    diagnostic.add_argument(
+        "--mode",
+        default=None,
+        help="apply this declared mode override to the config",
+    )
     return parser
 
 
@@ -149,6 +177,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "train-workers": cmd_train_workers,
         "train-synthesizer": cmd_train_synthesizer,
         "render-trace": cmd_render_trace,
+        "diagnose-inference": cmd_diagnose_inference,
     }
     try:
         return handlers[args.command](args)

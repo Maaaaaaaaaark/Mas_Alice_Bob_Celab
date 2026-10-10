@@ -27,6 +27,7 @@ PROMPT_FILES = {
     "worker_a_system": "worker_a_system.txt",
     "worker_b_system": "worker_b_system.txt",
     "synthesizer_system": "synthesizer_system.txt",
+    "direct_reader_system": "direct_reader_system.txt",
 }
 
 MAS_PROMPT_NAMES = ("alice", "bob", "celab", "forced_final")

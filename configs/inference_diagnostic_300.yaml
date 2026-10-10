@@ -1,0 +1,71 @@
+# Inference-only diagnostic: no checkpoint is loaded and no parameters update.
+# The validation split contains the same 300 questions in all four conditions.
+experiment_id: inference_diagnostic
+experiment_version: val300
+seed: 0
+output_dir: outputs/diagnostics
+manifest_dir: outputs/training_manifests/inference_diagnostic_300
+prompt_dir: prompts_training
+
+data:
+  dataset: hotpot_qa
+  dataset_config: distractor
+  train:
+    split: train
+    num_questions: 1
+    selection_seed: 0
+  val:
+    split: validation
+    num_questions: 300
+    selection_seed: 1
+  test:
+    split: validation
+    num_questions: 1
+    selection_seed: 2
+  partition_seed: 0
+  val_test_split_seed: 0
+
+model:
+  name: google/gemma-3-1b-it
+  revision: null
+  dtype: float16
+  device: cuda
+  attn_implementation: null
+  max_input_length: 30000
+  peft:
+    r: 16
+    alpha: 32
+    dropout: 0.0
+    target_modules: null
+
+# Training-only fields remain valid because this file reuses TrainingConfig.
+# diagnose-inference reads only eval_decode and synthesizer_decode below.
+workers:
+  G: 2
+  delta: 0.05
+  eps_n: 1.0e-6
+  clip_epsilon: 0.2
+  num_policy_epochs: 1
+  minibatch_size: 1
+  max_sampling_attempts: 1
+  learning_rate: 1.0e-4
+  weight_decay: 0.0
+  questions_per_update: 1
+  steps: 1
+  eval_interval: 1
+  final_test_eval: false
+  rollout:
+    do_sample: true
+    temperature: 0.6
+    top_p: 1.0
+    max_new_tokens: 256
+  eval_decode:
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0
+    max_new_tokens: 256
+  synthesizer_decode:
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0
+    max_new_tokens: 64

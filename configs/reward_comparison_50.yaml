@@ -30,7 +30,10 @@ workers:
   clip_epsilon: 0.2
   num_policy_epochs: 1
   minibatch_size: 1
-  max_sampling_attempts: 200
+  # A question is recorded and skipped if one side cannot produce four
+  # EOS-completed reports within this bound. Repeating hundreds of times does
+  # not help stable run-on generations and wastes substantial GPU time.
+  max_sampling_attempts: 40
   learning_rate: 1.0e-5
   weight_decay: 0.0
   questions_per_update: 1

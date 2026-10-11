@@ -147,7 +147,10 @@ def render_reward_summary(summary: Mapping[str, Any]) -> str:
     lines = [
         "# Reward comparison on fixed train questions",
         "",
-        f"Questions: {summary['num_questions']}",
+        f"Valid questions: {summary['num_questions']}",
+        f"Requested questions: "
+        f"{summary.get('num_requested_questions', summary['num_questions'])}",
+        f"Skipped questions: {summary.get('num_skipped_questions', 0)}",
         f"Signal threshold delta: {summary['signal_delta']}",
         "",
         "| Reward | Any variance | Signal at delta | Containment correlation |",
@@ -187,24 +190,36 @@ class RewardComparison:
         self.output_dir = cfg.stage_dir()
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.cache_path = self.output_dir / "sampled_reports.json"
+        self.skipped_path = self.output_dir / "skipped_questions.json"
         self.results_path = self.output_dir / "per_question.jsonl"
         self.prompts = TrainingPrompts(cfg.prompt_dir)
 
-    def _generate_reports(self, questions: List[SelectedQuestion]) -> Dict[str, Any]:
+    def _generate_reports(
+        self, questions: List[SelectedQuestion]
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         cache = (
             json.loads(self.cache_path.read_text(encoding="utf-8"))
             if self.cache_path.exists()
             else {}
         )
-        missing = [q for q in questions if q.question_id not in cache]
+        skipped = (
+            json.loads(self.skipped_path.read_text(encoding="utf-8"))
+            if self.skipped_path.exists()
+            else {}
+        )
+        missing = [
+            q for q in questions
+            if q.question_id not in cache and q.question_id not in skipped
+        ]
         if not missing:
-            return cache
+            return cache, skipped
         seed_all(self.cfg.seed)
         policy = HFPolicy(self.cfg.model)
         g = self.cfg.workers.G
         max_attempts = self.cfg.workers.max_sampling_attempts
         for q_index, question in enumerate(missing, 1):
             entry: Dict[str, List[Dict[str, Any]]] = {"a": [], "b": []}
+            rejected = False
             for side, evidence, key in (
                 ("A", question.evidence_alice, "a"),
                 ("B", question.evidence_bob, "b"),
@@ -242,13 +257,31 @@ class RewardComparison:
                         }
                     )
                 if len(entry[key]) != g:
-                    raise RuntimeError(
-                        f"could not obtain {g} completed {side} reports for "
-                        f"{question.question_id} in {max_attempts} attempts; "
-                        f"all rejected reports were empty or ended at the "
-                        f"configured max_new_tokens="
-                        f"{self.cfg.workers.rollout.max_new_tokens} before EOS"
+                    rejected = True
+                    skipped[question.question_id] = {
+                        "question_id": question.question_id,
+                        "side": side,
+                        "completed_reports": len(entry[key]),
+                        "required_reports": g,
+                        "attempts": max_attempts,
+                        "max_new_tokens": (
+                            self.cfg.workers.rollout.max_new_tokens
+                        ),
+                        "reason": "empty_or_truncated_before_eos",
+                    }
+                    _save_json(self.skipped_path, skipped)
+                    logger.warning(
+                        "skipping reward-comparison question %s: obtained "
+                        "%d/%d completed %s reports in %d attempts",
+                        question.question_id,
+                        len(entry[key]),
+                        g,
+                        side,
+                        max_attempts,
                     )
+                    break
+            if rejected:
+                continue
             cache[question.question_id] = entry
             _save_json(self.cache_path, cache)
             if q_index % 5 == 0 or q_index == len(missing):
@@ -265,18 +298,22 @@ class RewardComparison:
                 torch.cuda.empty_cache()
         except ImportError:
             pass
-        return cache
+        return cache, skipped
 
     def run(self) -> Dict[str, Any]:
         questions = load_manifest(manifest_path_for_split(self.cfg, "train"))
-        reports = self._generate_reports(questions)
+        reports, skipped = self._generate_reports(questions)
+        valid_questions = [
+            question for question in questions
+            if question.question_id in reports
+        ]
         existing = _load_jsonl(self.results_path)
         seed_all(self.cfg.seed)
         synthesizer = HFSynthesizer(
             self.cfg.model, self.cfg.workers.synthesizer_decode
         )
         g = self.cfg.workers.G
-        for q_index, question in enumerate(questions, 1):
+        for q_index, question in enumerate(valid_questions, 1):
             if question.question_id in existing:
                 continue
             entry = reports[question.question_id]
@@ -330,16 +367,23 @@ class RewardComparison:
             }
             _append_jsonl(self.results_path, row)
             existing[question.question_id] = row
-            if q_index % 5 == 0 or q_index == len(questions):
+            if q_index % 5 == 0 or q_index == len(valid_questions):
                 logger.info(
                     "reward comparison questions: %d/%d",
                     q_index,
-                    len(questions),
+                    len(valid_questions),
                 )
 
         summary = summarize_reward_rows(existing.values(), self.cfg.workers.delta)
+        summary["num_requested_questions"] = len(questions)
+        summary["num_valid_questions"] = len(valid_questions)
+        summary["num_skipped_questions"] = len(skipped)
+        summary["skipped_questions"] = list(skipped.values())
         summary["config"] = self.cfg.to_dict()
-        summary["complete"] = len(existing) == len(questions)
+        summary["complete"] = (
+            len(existing) == len(valid_questions)
+            and len(valid_questions) + len(skipped) == len(questions)
+        )
         summary_path = self.output_dir / "summary.json"
         _save_json(summary_path, summary)
         report_path = self.output_dir / "report.md"

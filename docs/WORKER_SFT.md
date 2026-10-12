@@ -142,7 +142,7 @@ parameters before and after training.
 batch starts, the trainer counts all of its supervised target tokens.
 Each microbatch backpropagates its NLL sum divided by that shared count,
 so accumulated gradients exactly equal `sum(NLL) / total target tokens`
-(normal run effective batch 16; trace 10). Prompt and padding tokens are
+(normal run effective batch 16; current trace 6). Prompt and padding tokens are
 excluded after the causal shift. The final partial group uses its own
 actual token count.
 
@@ -150,7 +150,7 @@ actual token count.
 
 | Mode | Purpose |
 |---|---|
-| `trace` | The first real run: 10 examples (7 answerable / 3 unanswerable, all three sources when valid prepared samples exist, at least one two-sentence target, single-document by default), microbatch 1, grad-accum 10, 1 epoch = one token-normalized optimizer update. Requires reviewed training examples. Writes the full structured trace and `worked_example_worker_sft.md` (sections A–J). Missing requirements are reported honestly — never fabricated. |
+| `trace` | The first real run: currently 6 leak-free reviewed examples (4 answerable / 2 unanswerable, SQuAD 2.0 + MuSiQue, at least one two-sentence target), microbatch 1, grad-accum 6, 1 epoch = one token-normalized optimizer update. The reviewed HotpotQA seed parent overlaps a frozen project-evaluation manifest and is therefore excluded; HotpotQA must be restored with newly reviewed, non-overlapping parents rather than bypassing isolation. Writes the full structured trace and `worked_example_worker_sft.md` (sections A–J). |
 | `smoke` | Larger functional check (default 64 examples) with grad-accum. |
 | `normal` | The real training run (default 4096 examples, effective batch 16). |
 

@@ -7,7 +7,7 @@ per-source answerability is reported; deviation from the target ratio
 is reported, not corrected by throwing examples away.
 
 Trace mode has hard requirements that are checked before training:
-exactly 10 examples, 7 positive / 3 negative, all three sources
+an explicitly configured number of positive/negative examples and sources,
 present, at least one two-sentence target, single visible document,
 and every example human-reviewed. Missing requirements are reported
 loudly — the trace is never fabricated by relabeling candidates.
@@ -161,7 +161,7 @@ def select_trace(
     """Select and verify the trace set; missing requirements are errors.
 
     Requirements: exactly ``trace_num_examples`` (default 10) with
-    ``trace_positives``/``trace_negatives`` (default 7/3), all three
+    ``trace_positives``/``trace_negatives``, the configured required
     sources present, at least one two-sentence target, single-document
     inputs, every example reviewed.
     """
@@ -179,18 +179,23 @@ def select_trace(
         config.mix.trace_negatives,
         config.mix.selection_seed,
     )
-    problems = _trace_requirements_check(selected)
+    problems = _trace_requirements_check(
+        selected, set(config.mix.trace_required_sources)
+    )
     if problems:
         raise ValueError("trace requirements not met: " + "; ".join(problems))
     return selected, problems
 
 
-def _trace_requirements_check(selected: List[WorkerExample]) -> List[str]:
+def _trace_requirements_check(
+    selected: List[WorkerExample], required_sources: set[str]
+) -> List[str]:
     problems: List[str] = []
     sources = {e.source for e in selected}
-    if sources != {"squad2", "musique", "hotpot"}:
+    if not required_sources.issubset(sources):
         problems.append(
-            f"all three sources required, got {sorted(sources)}"
+            f"required sources {sorted(required_sources)}, "
+            f"got {sorted(sources)}"
         )
     if not any(two_sentence_example(e) for e in selected):
         problems.append("at least one two-sentence target required")

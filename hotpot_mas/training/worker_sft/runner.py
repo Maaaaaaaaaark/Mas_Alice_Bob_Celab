@@ -236,7 +236,26 @@ def prepare_worker_sft_data(
     # 7. Mixture selection for the requested mode.
     require_reviewed = cfg.review.require_reviewed_for_training
     if mode == "trace":
-        train_selected, _ = select_trace(after_dedup, cfg)
+        try:
+            train_selected, _ = select_trace(after_dedup, cfg)
+        except ValueError as exc:
+            reviewed_ids = {e.example_id for e in reviewed_examples}
+            reviewed_removals = []
+            for stage, records in dedup_report.get("removed", {}).items():
+                for record in records:
+                    if record.get("example_id") in reviewed_ids:
+                        reviewed_removals.append(
+                            {
+                                "stage": stage,
+                                "example_id": record.get("example_id"),
+                                "reason": record.get("reason"),
+                            }
+                        )
+            detail = json.dumps(reviewed_removals, ensure_ascii=False)
+            raise ValueError(
+                f"{exc} Reviewed examples removed before trace selection: "
+                f"{detail}"
+            ) from exc
         mixture_report = source_mixture_report(train_selected)
         mixture_report["selection"] = "trace"
     else:

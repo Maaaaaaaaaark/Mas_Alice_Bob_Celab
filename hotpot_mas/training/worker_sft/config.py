@@ -165,6 +165,9 @@ class WorkerSFTMixConfig:
     trace_num_examples: int = 10
     trace_positives: int = 7
     trace_negatives: int = 3
+    trace_required_sources: List[str] = field(
+        default_factory=lambda: ["squad2", "musique", "hotpot"]
+    )
     selection_seed: int = 0
 
     @classmethod
@@ -187,6 +190,13 @@ class WorkerSFTMixConfig:
             trace_num_examples=int(raw.get("trace_num_examples", 10)),
             trace_positives=int(raw.get("trace_positives", 7)),
             trace_negatives=int(raw.get("trace_negatives", 3)),
+            trace_required_sources=[
+                str(name)
+                for name in raw.get(
+                    "trace_required_sources",
+                    defaults.trace_required_sources,
+                )
+            ],
             selection_seed=int(raw.get("selection_seed", 0)),
         )
 
@@ -202,6 +212,7 @@ class WorkerSFTMixConfig:
             "trace_num_examples": self.trace_num_examples,
             "trace_positives": self.trace_positives,
             "trace_negatives": self.trace_negatives,
+            "trace_required_sources": list(self.trace_required_sources),
             "selection_seed": self.selection_seed,
         }
 
@@ -496,6 +507,22 @@ class WorkerSFTConfig:
             raise ValueError("sft.warmup_ratio must be in [0, 1)")
         if not 0.0 <= self.mix.target_answerable_ratio <= 1.0:
             raise ValueError("mix.target_answerable_ratio must be in [0, 1]")
+        if (
+            self.mix.trace_positives + self.mix.trace_negatives
+            != self.mix.trace_num_examples
+        ):
+            raise ValueError(
+                "mix.trace_positives + mix.trace_negatives must equal "
+                "mix.trace_num_examples"
+            )
+        unknown_trace_sources = set(self.mix.trace_required_sources) - {
+            "squad2", "musique", "hotpot"
+        }
+        if unknown_trace_sources:
+            raise ValueError(
+                "mix.trace_required_sources contains unknown sources: "
+                f"{sorted(unknown_trace_sources)}"
+            )
         if self.model.dtype not in {"float16", "bfloat16", "float32"}:
             raise ValueError(
                 "model.dtype must be one of: float16, bfloat16, float32"

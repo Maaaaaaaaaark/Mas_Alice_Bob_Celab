@@ -1,7 +1,11 @@
 """Selection tests for worker-SFT probes, weak negatives, and source weights."""
 
 from hotpot_mas.training.worker_sft.checks import checked_example
-from hotpot_mas.training.worker_sft.mix import eligible_train, select_smoke_or_normal
+from hotpot_mas.training.worker_sft.mix import (
+    eligible_train,
+    select_smoke_or_normal,
+    select_trace,
+)
 
 from worker_sft_test_utils import (
     build_cpu_config,
@@ -56,3 +60,27 @@ def test_equal_source_weights_are_applied_to_both_labels(tmp_path):
         "musique": 1.0,
         "hotpot": 1.0,
     }
+
+
+def test_trace_can_require_only_current_leak_free_reviewed_sources(tmp_path):
+    cfg = build_cpu_config(tmp_path, require_reviewed=True)
+    cfg.mix.trace_num_examples = 6
+    cfg.mix.trace_positives = 4
+    cfg.mix.trace_negatives = 2
+    cfg.mix.trace_required_sources = ["squad2", "musique"]
+    examples = [
+        _item("sq-p1", "squad2", True),
+        _item("sq-p2", "squad2", True),
+        _item("mq-p1", "musique", True),
+        _item("mq-p2", "musique", True),
+        _item("sq-n", "squad2", False),
+        _item("mq-n", "musique", False),
+    ]
+    # Trace requires at least one reviewed two-sentence target.
+    examples[2].evidence.append(examples[2].evidence[0])
+
+    selected, problems = select_trace(examples, cfg)
+
+    assert len(selected) == 6
+    assert sum(e.answerable for e in selected) == 4
+    assert problems == []

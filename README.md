@@ -13,6 +13,15 @@ reproduces OPTIMA protocols (no two-agent alternation, no `<A>` termination,
 no token-pressure prompts, no reward/PPL/DPO/SFT training, no distractor
 injection).
 
+> **Scope note (added 2026-10-12):** the description above covers the
+> original base experiment and the Stage 1–2 training pipeline
+> ([docs/TRAINING.md](docs/TRAINING.md)). The NEW **Stage 1a worker SFT**
+> experiment (one shared worker model, SFT on a local question plus
+> visible documents, verbatim source-sentence answers or `NOT FOUND`) is
+> specified in [docs/WORKER_SFT.md](docs/WORKER_SFT.md); where an old rule
+> conflicts with it, the Stage 1a spec wins. Older experiments and their
+> saved results are unchanged.
+
 ---
 
 ## 1. Directory tree and per-file purposes
@@ -20,7 +29,7 @@ injection).
 ```
 D:\Base_Experiment_hotpot_mas\
 ├── hotpotqa_base_mas_experiment_spec.md  # spec v1.2 (single source of truth)
-├── README_FOR_AGENT.md                   # spec-authority notice (unmodified)
+├── README_FOR_AGENT.md                   # spec-authority notice (original unmodified; appended Stage 1a scope note)
 ├── README.md                             # this file
 ├── requirements.txt                      # pinned minimum versions
 ├── pytest.ini                            # pytest config (testpaths=tests, pythonpath=.)

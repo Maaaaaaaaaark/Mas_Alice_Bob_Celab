@@ -822,6 +822,16 @@ persist complete run record
 
 v1 暂未实现 worker 自主触发调用的调度机制或并行请求执行；这是实现范围说明，不是 Base 的理论禁止项。worker 在回复正文中自然提出追问或澄清需求不受额外限制。自动格式修复重试默认不启用，解析失败按第 7 节的显式最小处理执行。
 
+> **Scope note (added 2026-10-12, not part of the original v1.2 spec):**
+> the deferrals above apply to THIS Base experiment only. The NEW Stage 1a
+> experiment ("worker SFT": one shared worker model trained with SFT on a
+> local question plus visible documents, answering with verbatim source
+> sentences or `NOT FOUND`) is specified in
+> [docs/WORKER_SFT.md](docs/WORKER_SFT.md). Where an old rule here (e.g.
+> workers never see the original question, no distractors) conflicts with
+> Stage 1a, Stage 1a's own spec wins. This file is left unchanged
+> otherwise, and the Base experiment's saved results are untouched.
+
 ## 20. 完成标准
 
 实现完成需满足：

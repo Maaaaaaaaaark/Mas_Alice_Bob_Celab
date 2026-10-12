@@ -1,0 +1,118 @@
+# Stage 1a worker SFT configuration (docs/WORKER_SFT.md).
+#
+# Trains ONE shared worker model with SFT on a fresh LoRA adapter over
+# gemma-3-1b-it. No coordinator, no RL, no routing, no joint training.
+# Every effective default (weight decay, scheduler, ...) is recorded in
+# each run's config snapshot. Run modes are deep-merged over the base:
+#   trace  - 10 reviewed examples, 7 positive / 3 negative, 1 microstep
+#            per optimizer step, checkpoint per step, worked example
+#   smoke  - larger functional check (64 examples)
+#   normal - full training set (4096 examples), grad-accum 8
+
+experiment_id: worker_sft
+experiment_version: v0
+seed: 0
+output_dir: outputs/worker_sft
+data_dir: outputs/worker_sft_data
+prompt_dir: prompts_worker_sft
+
+data:
+  reviewed_file: data/worker_sft_reviewed.json
+  # Optional teacher-generated local questions for HotpotQA. The file may
+  # be absent; its absence is reported in the data manifest, never
+  # silently skipped. Teacher entries stay separate until reviewed.
+  teacher_file: data/local_questions_hotpot_teacher.jsonl
+  # Official MuSiQue leak-prevention list (sha256 verified before use).
+  exclusion_file: data/dev_test_singlehop_questions_v1.0.json
+  exclusion_sha256: 013be00ab914799891e5ae40de6cdc1baf03aaffd1f3ce4bf0de796020069613
+  eval_manifest_paths:
+    - outputs/question_manifest_distractor.json
+    - outputs/hotpotqa_base_mas/manifest.json
+  sources:
+    squad2:
+      enabled: true
+      weight: 1.0
+      max_candidates: 5000
+      official_split: train
+    musique:
+      enabled: true
+      weight: 1.0
+      max_candidates: 1500
+      official_split: train
+    # HotpotQA training examples come ONLY from the reviewed (and
+    # optional teacher) files; no live teacher call, no auto candidates.
+    hotpot:
+      enabled: true
+      weight: 1.0
+      max_candidates: 0
+      official_split: train
+
+mix:
+  target_answerable_ratio: 0.7   # after filtering + dedup; not forced
+  near_dup_question_jaccard: 0.9
+  near_dup_paragraph_jaccard: 0.95
+  val_test_freeze_seed: 1234     # val/test definitions freeze BEFORE training variants
+  val_parents: 4                 # parents frozen into val (model selection)
+  test_parents: 4                # parents frozen into test (final evaluation)
+  total_examples: 0              # set per mode below
+  trace_num_examples: 10
+  trace_positives: 7
+  trace_negatives: 3
+  selection_seed: 0
+
+model:
+  name: google/gemma-3-1b-it
+  revision: null                 # pin the exact revision for real runs; recorded in the snapshot
+  dtype: bfloat16                # bf16 when supported; fp16/fp32 fallback recorded
+  device: cuda
+  max_input_tokens: 8192         # exceeding this is a hard error, never silent truncation
+  peft:
+    r: 16
+    alpha: 32
+    dropout: 0.05
+    target_modules: null         # null -> all linear modules of the base model
+
+sft:
+  num_epochs: 1
+  learning_rate: 1.0e-5
+  weight_decay: 0.0
+  adam_betas: [0.9, 0.999]
+  adam_eps: 1.0e-8
+  microbatch_size: 1
+  grad_accum_steps: 8            # normal run; trace overrides to 1
+  max_grad_norm: 1.0
+  scheduler: none                # fixed lr; "linear" available with warmup
+  warmup_ratio: 0.0
+  seed: 0
+  example_order_seed: 0
+
+decode:
+  do_sample: false               # deterministic greedy probes
+  temperature: 1.0
+  top_p: 1.0
+  max_new_tokens: 128
+  probe_seed: 12345
+
+review:
+  require_reviewed_for_training: false  # true in trace mode
+
+modes:
+  trace:
+    experiment_version: trace
+    mix:
+      total_examples: 10
+      trace_num_examples: 10
+      trace_positives: 7
+      trace_negatives: 3
+    sft:
+      grad_accum_steps: 1        # 10 examples -> 10 optimizer steps
+    review:
+      require_reviewed_for_training: true
+  smoke:
+    experiment_version: smoke
+    mix:
+      total_examples: 64
+  normal:
+    experiment_version: normal
+    mix:
+      total_examples: 4096

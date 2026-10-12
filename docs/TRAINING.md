@@ -23,6 +23,20 @@ be diffed locally: no poppler on the development machine). Where TeX, the
 PDF, or the requirements conflict, the conflict is pointed out instead of
 silently picking a side — see the next section.
 
+## 1a. Stage 1a (worker SFT) is a separate experiment
+
+The NEW Stage 1a experiment — one shared worker model trained with SFT on
+a local question plus visible documents, answering with verbatim source
+sentences (`D0: "..."`) or exactly `NOT FOUND` — is specified in
+[`WORKER_SFT.md`](WORKER_SFT.md). It has its own package
+(`hotpot_mas/training/worker_sft/`), its own config
+(`configs/worker_sft.yaml`), and its own output directories. Old rules in
+this document and in the baseline documents (workers never see the
+question, no distractors, only C is trained with SFT) apply to the OLDER
+experiments only; Stage 1a behavior is defined by its own spec. Nothing
+here is rewritten, and the older experiments and their saved results are
+preserved.
+
 ## 2. Documented deviations / extensions of the TeX
 
 These were agreed with the requirements rather than chosen silently:

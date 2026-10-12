@@ -1,0 +1,324 @@
+{
+  "schema_version": 1,
+  "note": "Hand-reviewed seed examples for Stage 1a worker SFT (docs/WORKER_SFT.md). Each entry is a thin index into official data: prepare-worker-sft-data re-fetches the official row, verifies every stored text against it, and excludes any entry that no longer matches. Evidence texts must occur verbatim in the stated document and form one or two complete sentences under the documented sentence splitter. These examples are NOT official annotations and NOT model-generated: they are review indices with provenance.",
+  "splitter_version": "worker-sft-v1",
+  "reviewed_by": "yh.liang.2026",
+  "reviewed_date": "2026-10-12",
+  "entries": [
+    {
+      "example_id": "reviewed-sq-pos-1",
+      "source": "squad2",
+      "split": "train",
+      "pointer": {"row_id": "56be85543aeaaa14008c9065"},
+      "original_question": "What areas did Beyonce compete in when she was growing up?",
+      "local_question": "What areas did Beyonce compete in when she was growing up?",
+      "substitutions": [],
+      "answer": "singing and dancing",
+      "answer_aliases": ["dancing and singing"],
+      "answerable": true,
+      "documents": [{"doc_id": "d0", "title": "Beyonce"}],
+      "evidence": [
+        {
+          "doc_id": "d0",
+          "sentence": "Born and raised in Houston, Texas, she performed in various singing and dancing competitions as a child, and rose to fame in the late 1990s as lead singer of R&B girl-group Destiny's Child."
+        }
+      ],
+      "negative_reason": null,
+      "probe": false,
+      "review": {
+        "status": "reviewed",
+        "reviewer": "yh.liang.2026",
+        "method": "checked against the official SQuAD 2.0 train row (answer offsets 207-225); the evidence sentence is the sentence containing the answer span and directly answers the question",
+        "notes": "one sentence is enough; the question names the subject"
+      }
+    },
+    {
+      "example_id": "reviewed-sq-pos-2",
+      "source": "squad2",
+      "split": "train",
+      "pointer": {"row_id": "56bf6b0f3aeaaa14008c9602"},
+      "original_question": "In which decade did Beyonce become famous?",
+      "local_question": "In which decade did Beyonce become famous?",
+      "substitutions": [],
+      "answer": "late 1990s",
+      "answer_aliases": ["the late 1990s", "1990s"],
+      "answerable": true,
+      "documents": [{"doc_id": "d0", "title": "Beyonce"}],
+      "evidence": [
+        {
+          "doc_id": "d0",
+          "sentence": "Born and raised in Houston, Texas, she performed in various singing and dancing competitions as a child, and rose to fame in the late 1990s as lead singer of R&B girl-group Destiny's Child."
+        }
+      ],
+      "negative_reason": null,
+      "probe": false,
+      "review": {
+        "status": "reviewed",
+        "reviewer": "yh.liang.2026",
+        "method": "checked against the official SQuAD 2.0 train row (answer offsets 276-286); the evidence sentence contains the answer span",
+        "notes": "one sentence is enough"
+      }
+    },
+    {
+      "example_id": "reviewed-sq-neg-1",
+      "source": "squad2",
+      "split": "train",
+      "pointer": {"row_id": "5acf612677cf76001a684ce0"},
+      "original_question": "What colors are worn by KU's non-athletic teams?",
+      "local_question": "What colors are worn by KU's non-athletic teams?",
+      "substitutions": [],
+      "answer": "",
+      "answer_aliases": [],
+      "answerable": false,
+      "documents": [{"doc_id": "d0", "title": "University_of_Kansas"}],
+      "evidence": [],
+      "negative_reason": "official SQuAD 2.0 unanswerable example: the document names the colors of the sports teams only and says nothing about non-athletic teams",
+      "probe": false,
+      "review": {
+        "status": "reviewed",
+        "reviewer": "yh.liang.2026",
+        "method": "checked against the official SQuAD 2.0 train row (empty official answer list); the document contains 'crimson and royal blue' only for the sports teams",
+        "notes": "official unanswerable example, used as the negative label"
+      }
+    },
+    {
+      "example_id": "reviewed-mq-pos-1",
+      "source": "musique",
+      "split": "train",
+      "pointer": {"row_id": "2hop__129292_160863", "subquestion_index": 1},
+      "original_question": "What year saw the creation of the region where the county of Hertfordshire is located?",
+      "original_subquestion": "When was #1 birthed?",
+      "local_question": "When was East of England birthed?",
+      "substitutions": [{"placeholder": "#1", "replacement": "East of England", "source": "answer of subquestion 0"}],
+      "answer": "1994",
+      "answer_aliases": [],
+      "answerable": true,
+      "documents": [{"doc_id": "d0", "title": "East of England"}],
+      "evidence": [
+        {
+          "doc_id": "d0",
+          "sentence": "The East of England is one of nine official regions of England at the first level of NUTS for statistical purposes."
+        },
+        {
+          "doc_id": "d0",
+          "sentence": "It was created in 1994 and was adopted for statistics from 1999."
+        }
+      ],
+      "negative_reason": null,
+      "probe": false,
+      "review": {
+        "status": "reviewed",
+        "reviewer": "yh.liang.2026",
+        "method": "checked against the official MuSiQue ans v1.0 train row; the decomposition subquestion references answer 1 ('East of England'), which was substituted for '#1'; the evidence sentences come from the subquestion's support paragraph (idx 10)",
+        "notes": "two sentences: the second sentence starts with 'It', so the first sentence is needed to identify the subject"
+      }
+    },
+    {
+      "example_id": "reviewed-mq-pos-2",
+      "source": "musique",
+      "split": "train",
+      "pointer": {"row_id": "2hop__63119_153058", "subquestion_index": 1},
+      "original_question": "What city is the person who broadened the doctrine of philosophy of language from?",
+      "original_subquestion": "What city is #1 from?",
+      "local_question": "What city is Søren Kierkegaard from?",
+      "substitutions": [{"placeholder": "#1", "replacement": "Søren Kierkegaard", "source": "answer of subquestion 0"}],
+      "answer": "Copenhagen",
+      "answer_aliases": [],
+      "answerable": true,
+      "documents": [{"doc_id": "d0", "title": "Søren Kierkegaard"}],
+      "evidence": [
+        {
+          "doc_id": "d0",
+          "sentence": "Kierkegaard was born to an affluent family in Copenhagen."
+        }
+      ],
+      "negative_reason": null,
+      "probe": false,
+      "review": {
+        "status": "reviewed",
+        "reviewer": "yh.liang.2026",
+        "method": "checked against the official MuSiQue ans v1.0 train row; the subquestion references answer 1, which was substituted for '#1'; the evidence sentence is from the support paragraph (idx 11) and contains the answer",
+        "notes": "one sentence is enough"
+      }
+    },
+    {
+      "example_id": "reviewed-mq-neg-1",
+      "source": "musique",
+      "split": "train",
+      "pointer": {"row_id": "2hop__129292_160863", "subquestion_index": 1},
+      "original_question": "What year saw the creation of the region where the county of Hertfordshire is located?",
+      "original_subquestion": "When was #1 birthed?",
+      "local_question": "When was East of England birthed?",
+      "substitutions": [{"placeholder": "#1", "replacement": "East of England", "source": "answer of subquestion 0"}],
+      "answer": "1994",
+      "answer_aliases": [],
+      "answerable": false,
+      "documents": [{"doc_id": "d0", "title": "Hertfordshire"}],
+      "evidence": [],
+      "negative_reason": "the visible document is the OTHER paragraph of the same MuSiQue parent (idx 6, Hertfordshire); it names the region but gives no creation date, so the subquestion cannot be answered from this document",
+      "probe": false,
+      "review": {
+        "status": "reviewed",
+        "reviewer": "yh.liang.2026",
+        "method": "checked against the official MuSiQue ans v1.0 train row: the answer '1994' and its aliases do not occur anywhere in the visible Hertfordshire paragraph, and the paragraph does not state when the East of England region was created",
+        "notes": "negative label built by swapping the support paragraph for the sibling paragraph of the same parent question"
+      }
+    },
+    {
+      "example_id": "reviewed-hp-pos-1",
+      "source": "hotpot",
+      "split": "train",
+      "pointer": {"row_id": "5a7a06935542990198eaf050", "titles": ["Arthur's Magazine"]},
+      "original_question": "Which magazine was started first Arthur's Magazine or First for Women?",
+      "local_question": "When was Arthur's Magazine first published?",
+      "substitutions": [],
+      "answer": "1844",
+      "answer_aliases": [],
+      "answerable": true,
+      "documents": [{"doc_id": "d0", "title": "Arthur's Magazine"}],
+      "evidence": [
+        {
+          "doc_id": "d0",
+          "sentence": "Arthur's Magazine (1844–1846) was an American literary periodical published in Philadelphia in the 19th century."
+        }
+      ],
+      "negative_reason": null,
+      "probe": false,
+      "review": {
+        "status": "reviewed",
+        "reviewer": "yh.liang.2026",
+        "method": "local question hand-built from the official HotpotQA distractor train row; the evidence is the official supporting-fact sentence (title 'Arthur's Magazine', sent_id 0), which contains the answer '1844'",
+        "notes": "the full HotpotQA question is a two-hop comparison and is NOT used as the local question"
+      }
+    },
+    {
+      "example_id": "reviewed-hp-pos-2",
+      "source": "hotpot",
+      "split": "train",
+      "pointer": {"row_id": "5a7a06935542990198eaf050", "titles": ["First for Women"]},
+      "original_question": "Which magazine was started first Arthur's Magazine or First for Women?",
+      "local_question": "In what year was the magazine First for Women started?",
+      "substitutions": [],
+      "answer": "1989",
+      "answer_aliases": [],
+      "answerable": true,
+      "documents": [{"doc_id": "d0", "title": "First for Women"}],
+      "evidence": [
+        {
+          "doc_id": "d0",
+          "sentence": "The magazine was started in 1989."
+        }
+      ],
+      "negative_reason": null,
+      "probe": false,
+      "review": {
+        "status": "reviewed",
+        "reviewer": "yh.liang.2026",
+        "method": "local question hand-built from the official HotpotQA distractor train row; the evidence is the official supporting-fact sentence (title 'First for Women', sent_id 1), which contains the answer '1989'",
+        "notes": "one sentence is enough"
+      }
+    },
+    {
+      "example_id": "reviewed-hp-pos-3",
+      "source": "hotpot",
+      "split": "train",
+      "pointer": {"row_id": "5a7a06935542990198eaf050", "titles": ["Arthur's Magazine"]},
+      "original_question": "Which magazine was started first Arthur's Magazine or First for Women?",
+      "local_question": "In which month and year was Arthur's Magazine merged into Godey's Lady's Book?",
+      "substitutions": [],
+      "answer": "May 1846",
+      "answer_aliases": ["1846", "May, 1846"],
+      "answerable": true,
+      "documents": [{"doc_id": "d0", "title": "Arthur's Magazine"}],
+      "evidence": [
+        {
+          "doc_id": "d0",
+          "sentence": "In May 1846 it was merged into \"Godey's Lady's Book\"."
+        }
+      ],
+      "negative_reason": null,
+      "probe": false,
+      "review": {
+        "status": "reviewed",
+        "reviewer": "yh.liang.2026",
+        "method": "local question hand-built from the official HotpotQA distractor train row; the evidence is the official sentence (title 'Arthur's Magazine', sent_id 2), which contains the answer 'May 1846'",
+        "notes": "one sentence is enough"
+      }
+    },
+    {
+      "example_id": "reviewed-hp-neg-1",
+      "source": "hotpot",
+      "split": "train",
+      "pointer": {"row_id": "5a7a06935542990198eaf050", "titles": ["First for Women"]},
+      "original_question": "Which magazine was started first Arthur's Magazine or First for Women?",
+      "local_question": "Who edited the magazine First for Women?",
+      "substitutions": [],
+      "answer": "",
+      "answer_aliases": [],
+      "answerable": false,
+      "documents": [{"doc_id": "d0", "title": "First for Women"}],
+      "evidence": [],
+      "negative_reason": "the visible document names the publisher (Bauer Media Group) but names no editor, so the question cannot be answered from this document",
+      "probe": false,
+      "review": {
+        "status": "reviewed",
+        "reviewer": "yh.liang.2026",
+        "method": "checked against the official HotpotQA distractor train row: no answer string occurs in the visible document and no sentence states who edited the magazine",
+        "notes": "negative label built from a non-supporting reading of the supporting document; the document is real, the question is answerable in principle, but not from the visible document"
+      }
+    },
+    {
+      "example_id": "probe-hp-pos-1",
+      "source": "hotpot",
+      "split": "train",
+      "pointer": {"row_id": "5a7a06935542990198eaf050", "titles": ["Arthur's Magazine", "First for Women"]},
+      "original_question": "Which magazine was started first Arthur's Magazine or First for Women?",
+      "local_question": "Which magazine was started first, Arthur's Magazine or First for Women?",
+      "substitutions": [],
+      "answer": "Arthur's Magazine",
+      "answer_aliases": ["Arthur's"],
+      "answerable": true,
+      "documents": [{"doc_id": "d0", "title": "Arthur's Magazine"}, {"doc_id": "d1", "title": "First for Women"}],
+      "evidence": [
+        {
+          "doc_id": "d0",
+          "sentence": "Arthur's Magazine (1844–1846) was an American literary periodical published in Philadelphia in the 19th century."
+        },
+        {
+          "doc_id": "d1",
+          "sentence": "The magazine was started in 1989."
+        }
+      ],
+      "negative_reason": null,
+      "probe": true,
+      "review": {
+        "status": "reviewed",
+        "reviewer": "yh.liang.2026",
+        "method": "checked against the official HotpotQA distractor train row: both supporting-fact sentences are required to compare the two start dates, and each sentence comes from a different document, so the target uses two different source IDs",
+        "notes": "fixed multi-document generation probe (not trained in the trace); a comparison question is used here as a probe only, not as a training example"
+      }
+    },
+    {
+      "example_id": "probe-hp-neg-1",
+      "source": "hotpot",
+      "split": "train",
+      "pointer": {"row_id": "5a7a06935542990198eaf050", "titles": ["First for Women"]},
+      "original_question": "Which magazine was started first Arthur's Magazine or First for Women?",
+      "local_question": "Which magazine was started first, Arthur's Magazine or First for Women?",
+      "substitutions": [],
+      "answer": "Arthur's Magazine",
+      "answer_aliases": ["Arthur's"],
+      "answerable": false,
+      "documents": [{"doc_id": "d0", "title": "First for Women"}],
+      "evidence": [],
+      "negative_reason": "the visible document gives the start year of First for Women only; comparing the two magazines requires the other document, so the question cannot be answered from the visible document alone",
+      "probe": true,
+      "review": {
+        "status": "reviewed",
+        "reviewer": "yh.liang.2026",
+        "method": "checked against the official HotpotQA distractor train row: the answer 'Arthur's Magazine' and its aliases do not occur in the visible document",
+        "notes": "fixed multi-document generation probe: the two-document question with only one document visible"
+      }
+    }
+  ]
+}

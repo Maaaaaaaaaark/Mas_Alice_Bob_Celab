@@ -12,6 +12,14 @@ Subcommands:
   ``trace.json`` (no model, no GPU).
 - ``diagnose-inference``: run the four-condition validation diagnostic
   without training or loading a trained checkpoint.
+- ``prepare-worker-sft-data``: Stage 1a data prep (conversion, label
+  checks, dedup, mixture selection) into ``outputs/worker_sft_data/``.
+- ``inspect-worker-sft-lengths``: tokenizer-only length report for the
+  prepared Stage 1a examples (no model weights, no training).
+- ``train-worker-sft``: Stage 1a SFT of the shared worker LoRA
+  (trace / smoke / normal).
+- ``render-worker-sft-trace``: regenerate
+  ``worked_example_worker_sft.md`` from a Stage 1a ``trace.json``.
 """
 
 from __future__ import annotations
@@ -149,6 +157,55 @@ def cmd_compare_rewards(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_prepare_worker_sft_data(args: argparse.Namespace) -> int:
+    from .worker_sft.config import WorkerSFTConfig
+    from .worker_sft.runner import prepare_worker_sft_data
+
+    cfg = WorkerSFTConfig.from_yaml(args.config, mode=args.mode)
+    paths = prepare_worker_sft_data(cfg, args.mode, force=args.force)
+    for name, path in paths.items():
+        print(f"  {name}: {path}")
+    return 0
+
+
+def cmd_inspect_worker_sft_lengths(args: argparse.Namespace) -> int:
+    from .worker_sft.config import WorkerSFTConfig
+    from .worker_sft.inspect import inspect_worker_sft_lengths
+
+    cfg = WorkerSFTConfig.from_yaml(args.config, mode=args.mode)
+    report_path = inspect_worker_sft_lengths(cfg)
+    print(f"  lengths report: {report_path}")
+    return 0
+
+
+def cmd_train_worker_sft(args: argparse.Namespace) -> int:
+    from .worker_sft.config import WorkerSFTConfig
+    from .worker_sft.trainer import run_worker_sft_training
+
+    cfg = WorkerSFTConfig.from_yaml(args.config, mode=args.mode)
+    outcome = run_worker_sft_training(
+        cfg, mode=args.mode, resume=args.resume
+    )
+    print("worker SFT finished:")
+    for key, value in outcome.items():
+        print(f"  {key}: {value}")
+    return 0
+
+
+def cmd_render_worker_sft_trace(args: argparse.Namespace) -> int:
+    from .worker_sft.trace import render_worker_sft_worked_example
+
+    trace_path = Path(args.trace)
+    output_path = (
+        Path(args.output)
+        if args.output
+        else trace_path.parent / "worked_example_worker_sft.md"
+    )
+    render_worker_sft_worked_example(trace_path, output_path)
+    print(f"worked example written: {output_path}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m hotpot_mas.training.cli",
@@ -246,6 +303,49 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rewards.add_argument("--config", required=True)
     rewards.add_argument("--mode", default=None)
+
+    prepare_worker = sub.add_parser(
+        "prepare-worker-sft-data",
+        help="Stage 1a: convert, check, dedup, and select worker data",
+    )
+    prepare_worker.add_argument("--config", required=True)
+    prepare_worker.add_argument(
+        "--mode",
+        required=True,
+        choices=["trace", "smoke", "normal"],
+    )
+    prepare_worker.add_argument(
+        "--force", action="store_true",
+        help="rebuild prepared data even if it already exists",
+    )
+
+    inspect = sub.add_parser(
+        "inspect-worker-sft-lengths",
+        help="Stage 1a: tokenizer-only length report (no model weights)",
+    )
+    inspect.add_argument("--config", required=True)
+    inspect.add_argument("--mode", required=True,
+                         choices=["trace", "smoke", "normal"])
+
+    train_worker = sub.add_parser(
+        "train-worker-sft",
+        help="Stage 1a: SFT of the shared worker LoRA",
+    )
+    train_worker.add_argument("--config", required=True)
+    train_worker.add_argument(
+        "--mode", required=True, choices=["trace", "smoke", "normal"]
+    )
+    train_worker.add_argument(
+        "--resume", action="store_true",
+        help="resume from this run's own checkpoint in the stage directory",
+    )
+
+    render_worker = sub.add_parser(
+        "render-worker-sft-trace",
+        help="regenerate worked_example_worker_sft.md from a trace.json",
+    )
+    render_worker.add_argument("--trace", required=True)
+    render_worker.add_argument("--output", default=None)
     return parser
 
 
@@ -260,6 +360,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         "diagnose-inference": cmd_diagnose_inference,
         "check-logprobs": cmd_check_logprobs,
         "compare-rewards": cmd_compare_rewards,
+        "prepare-worker-sft-data": cmd_prepare_worker_sft_data,
+        "inspect-worker-sft-lengths": cmd_inspect_worker_sft_lengths,
+        "train-worker-sft": cmd_train_worker_sft,
+        "render-worker-sft-trace": cmd_render_worker_sft_trace,
     }
     try:
         return handlers[args.command](args)

@@ -71,3 +71,35 @@ def test_failure_analysis_job_is_cpu_only_and_calls_failure_cli():
     assert "python -m hotpot_mas.cli analyze-failures" in text
     assert '--runs "$RUNS_PATH"' in text
     assert '--output-dir "$OUTPUT_DIR"' in text
+
+
+def test_worker_sft_job_preps_data_then_trains_on_one_a5000():
+    text = (SCRIPTS / "violet_worker_sft.sbatch").read_text(
+        encoding="utf-8"
+    )
+    assert "#SBATCH --gres=gpu:1" in text
+    assert "#SBATCH --constraint=a5000" in text
+    assert "#SBATCH --partition=researchshort" in text
+    assert "#SBATCH --qos=research-1-qos" in text
+    assert "#SBATCH --account=pradeepresearch" in text
+    assert 'MODE="${WORKER_SFT_MODE:-trace}"' in text
+    assert (
+        "srun python -m hotpot_mas.training.cli prepare-worker-sft-data"
+        in text
+    )
+    assert (
+        "srun python -m hotpot_mas.training.cli train-worker-sft" in text
+    )
+    # Optional rebuild/resume switches stay opt-in, not defaults.
+    assert 'WORKER_SFT_FORCE_DATA:-0' in text
+    assert 'WORKER_SFT_RESUME:-0' in text
+    # The pinned HF cache and the exact trace-mode output paths are
+    # printed by the job so the researcher knows where artifacts land.
+    assert 'HF_HOME="$MAS_SCRATCH/hf_cache"' in text
+    assert "worked_example_worker_sft.md" in text
+    assert "configs/worker_sft.yaml" in text
+    # No silent GPU assumptions: the job itself checks what it got.
+    assert "nvidia-smi" in text
+    assert "srun whichgpu" in text
+    # Nonzero exit codes propagate (set -euo pipefail + no swallowing).
+    assert "set -euo pipefail" in text

@@ -23,4 +23,14 @@ In particular:
 - do not add communication-efficiency prompts;
 
 - follow the Markdown specification whenever it conflicts with reference code.
+
+---
+
+SCOPE NOTE (added 2026-10-12, not part of the original notice above):
+the rules above apply to the ORIGINAL inference-baseline experiment only.
+The NEW Stage 1a experiment (one shared worker model, SFT, local question
+plus visible documents, verbatim source-sentence answers or NOT FOUND) is
+specified in docs/WORKER_SFT.md, which overrides any old rule that
+conflicts with it. The original experiment and its saved results are
+unchanged.
  

@@ -1,0 +1,8 @@
+You are C, the coordinator. You cannot ask any more questions. Answer the question using the quotes collected below.
+
+Question: $question
+
+Conversation so far:
+$log
+
+Give only the short answer (a name, date, number, or yes/no). If quotes disagree, trust the quote that directly states the fact. If the evidence is incomplete, give your best short answer.

@@ -1,0 +1,9 @@
+You will answer the question by reading at most 2 documents. For now you can see only their titles.
+
+Question: $question
+
+Document titles:
+$titles
+
+Write one line with the IDs of the documents you want to read (at most 2), for example:
+READ: D3, D7

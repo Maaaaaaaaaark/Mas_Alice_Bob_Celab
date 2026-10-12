@@ -1,0 +1,8 @@
+Answer the question using the documents below. Some documents are irrelevant.
+
+Question: $question
+
+Documents:
+$documents
+
+Give only the short answer (a name, date, number, or yes/no), no explanation.

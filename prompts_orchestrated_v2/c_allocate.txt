@@ -1,0 +1,12 @@
+You are C, the coordinator. Two readers, A and B, will read documents for you. You cannot read the documents yourself. You only see their titles.
+
+Question: $question
+
+Document titles:
+$titles
+
+Split the 10 documents between A and B: 5 each, every document exactly once. Put documents that belong together (about the same person, group, or event) with the same reader, so each reader can answer a focused question.
+
+Write exactly two lines and nothing else:
+A: D?, D?, D?, D?, D?
+B: D?, D?, D?, D?, D?

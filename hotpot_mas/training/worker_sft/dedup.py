@@ -381,7 +381,21 @@ def apply_within_train_dedup(
     seen_questions: List[Tuple[str, str]] = []
     seen_paragraphs: List[Tuple[str, str]] = []
     kept: List[WorkerExample] = []
-    for example in examples:
+    # Curated/reviewed records must win over their automatically converted
+    # twins. Auto candidates are loaded first by the runner, so processing
+    # raw input order would otherwise discard the reviewed trace examples.
+    ordered_examples = sorted(
+        enumerate(examples),
+        key=lambda item: (
+            0
+            if item[1].review.get("status") == "reviewed"
+            and item[1].split == "train"
+            and not item[1].probe
+            else 1,
+            item[0],
+        ),
+    )
+    for _, example in ordered_examples:
         if example.excluded:
             kept.append(example)
             continue
@@ -415,19 +429,10 @@ def apply_within_train_dedup(
                         f"(jaccard {score:.3f}, similar documents)"
                     )
                     break
-            if reason is None:
-                for doc in example.documents:
-                    paragraph = normalize_text(doc.text)
-                    for other_id, other_paragraph in seen_paragraphs:
-                        score = _jaccard(paragraph, other_paragraph)
-                        if score >= paragraph_jaccard_threshold:
-                            reason = (
-                                f"near-duplicate paragraph of {other_id} "
-                                f"(jaccard {score:.3f})"
-                            )
-                            break
-                    if reason is not None:
-                        break
+            # The same document may legitimately answer many different
+            # questions. Paragraph similarity alone is therefore not a
+            # within-train duplicate; the question+document check above
+            # is the relevant criterion.
         if reason is not None:
             example.excluded = True
             example.exclusion_reason = f"within-train dedup: {reason}"

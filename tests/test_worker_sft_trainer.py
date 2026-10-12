@@ -183,9 +183,10 @@ def test_trace_mode_builds_trace_and_worked_example(tmp_path):
     # The worked example never fabricates values: what is rendered is
     # exactly what the trace recorded.
     assert "update loss" in md
-    # Checkpoint per step in trace mode, plus the final checkpoint.
+    # One checkpoint per completed step; the final save updates the last
+    # completed step rather than creating a misleading extra checkpoint.
     checkpoints = sorted(stage_dir.glob("step_*"))
-    assert len(checkpoints) == len(train) + 1
+    assert len(checkpoints) == len(train)
 
 
 def test_rendered_worked_example_is_deterministic(tmp_path):

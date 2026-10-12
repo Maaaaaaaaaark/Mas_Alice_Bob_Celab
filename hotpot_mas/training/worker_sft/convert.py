@@ -41,7 +41,10 @@ SPLITTER_VERSION = "worker-sft-v1"
 # Split after . ! ? when followed by whitespace and a capital letter,
 # a digit, or an opening quote. Documented heuristic; reviewed examples
 # are verified against it and excluded on mismatch.
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"'(0-9“])")
+_SENTENCE_SPLIT_RE = re.compile(
+    r"(?<=[.!?])\s+(?=[A-Z\"'(0-9“])|"
+    r"(?<=[.!?][\"”])\s+(?=[A-Z'(0-9“\"])"
+)
 
 # A sentence that cannot stand alone because it refers back to the
 # previous sentence: prepend the previous sentence in auto candidates.
@@ -105,7 +108,11 @@ def is_answer_in_text(
     normalized = normalize_text(text)
     candidates = [answer] + list(aliases)
     for candidate in candidates:
-        if candidate and normalize_text(candidate) in normalized:
+        normalized_candidate = normalize_text(candidate)
+        if (
+            normalized_candidate
+            and f" {normalized_candidate} " in f" {normalized} "
+        ):
             return True
     return False
 
@@ -296,6 +303,7 @@ def _doc_from_squad(context: str) -> WorkerDocument:
 def _evidence_sentences_for_answer(
     doc: WorkerDocument,
     answer: str,
+    answer_start: Optional[int] = None,
     include_second_for_pronoun: bool = True,
 ) -> Tuple[List[EvidenceSentence], Optional[str]]:
     """Locate evidence sentence(s) containing ``answer`` in ``doc``.
@@ -305,7 +313,11 @@ def _evidence_sentences_for_answer(
     the target's subject/reference is identifiable.
     """
     sentences = split_sentences(doc.text)
-    span = answer_offsets_in(doc.text, answer)
+    if answer_start is None:
+        span = answer_offsets_in(doc.text, answer)
+    else:
+        end = answer_start + len(answer)
+        span = (answer_start, end) if doc.text[answer_start:end] == answer else None
     if span is None:
         return [], f"answer {answer!r} not found verbatim in {doc.doc_id}"
     index = sentence_index_of_offset(sentences, doc.text, span[0])
@@ -352,7 +364,10 @@ def convert_squad2_row(
     provenance["row_id"] = row_id
     if answerable:
         answer = str(answers["text"][0])
-        evidence, failed = _evidence_sentences_for_answer(doc, answer)
+        answer_start = int(answers["answer_start"][0])
+        evidence, failed = _evidence_sentences_for_answer(
+            doc, answer, answer_start=answer_start
+        )
         example = WorkerExample(
             example_id=example_id,
             source="squad2",
@@ -360,6 +375,7 @@ def convert_squad2_row(
             parent_id=row_id,
             original_question=question,
             local_question=question,
+            substitutions=[],
             answer=answer,
             answer_aliases=[],
             answerable=True,
@@ -368,8 +384,8 @@ def convert_squad2_row(
             provenance=provenance,
         )
         example.provenance["answer_offsets"] = (
-            int(answers["answer_start"][0]),
-            int(answers["answer_start"][0]) + len(answer),
+            answer_start,
+            answer_start + len(answer),
         )
         if failed:
             example.excluded = True
@@ -382,6 +398,7 @@ def convert_squad2_row(
         parent_id=row_id,
         original_question=question,
         local_question=question,
+        substitutions=[],
         answer="",
         answerable=False,
         documents=[doc],
@@ -501,6 +518,11 @@ def convert_musique_row(
     # does not contain the answer (a basic check, not proof of
     # unanswerability; recorded as such in the label-quality report).
     negatives_made = 0
+    support_indices = {
+        sub.get("paragraph_support_idx")
+        for sub in decomposition
+        if sub.get("paragraph_support_idx") is not None
+    }
     for index, sub in enumerate(decomposition):
         if negatives_made >= max_negatives_per_parent:
             break
@@ -509,7 +531,10 @@ def convert_musique_row(
             continue
         sibling = None
         for p_index, paragraph in enumerate(paragraphs):
-            if p_index == sub.get("paragraph_support_idx"):
+            # A negative may not reuse any gold support paragraph from
+            # the same decomposition: another hop's support can still
+            # contain enough relational evidence to answer indirectly.
+            if p_index in support_indices:
                 continue
             if not is_answer_in_text(
                 str(paragraph.get("paragraph_text", "")),
@@ -604,6 +629,11 @@ def _locate_reviewed_evidence(
         )
     if len(located) > 2:
         return [], "more than two evidence sentences"
+    if len(located) == 2 and (
+        located[0].doc_id != located[1].doc_id
+        or located[1].sentence_index != located[0].sentence_index + 1
+    ):
+        return [], "two evidence sentences must be consecutive in one document"
     if answer and not is_answer_in_text(
         " ".join(ev.sentence for ev in located), answer, aliases
     ):
@@ -639,6 +669,14 @@ def resolve_reviewed_entry(
         )
     except Exception as exc:  # noqa: BLE001 - recorded, never silent
         return None, f"failed to load official row: {exc}"
+
+    expected_row_id = pointer.get("row_id")
+    actual_row_id = row.get("id")
+    if expected_row_id is not None and str(actual_row_id) != str(expected_row_id):
+        return None, (
+            f"official row mismatch: requested {expected_row_id!r}, "
+            f"loader returned {actual_row_id!r}"
+        )
 
     review = dict(entry.get("review") or {})
     review.setdefault("status", "reviewed")
@@ -683,9 +721,17 @@ def resolve_reviewed_entry(
         documents = [doc]
         row_id = str(row["id"])
     elif source == "hotpot":
+        from hotpot_mas.hotpotqa import row_context_documents
+
         pointer_titles = list(pointer.get("titles", []))
-        row_titles = [str(t) for t in row.get("title", [])]
-        row_sentences = row.get("sentences", [])
+        if row.get("context") is not None:
+            context_documents = row_context_documents(row)
+            row_titles = [str(doc["title"]) for doc in context_documents]
+            row_sentences = [doc["sentences"] for doc in context_documents]
+        else:
+            # Compatibility with small legacy/local fixtures.
+            row_titles = [str(t) for t in row.get("title", [])]
+            row_sentences = row.get("sentences", [])
         entry_titles = [str(d["title"]) for d in entry.get("documents", [])]
         visible_titles = entry_titles or pointer_titles
         for doc_index, title in enumerate(visible_titles):
@@ -731,6 +777,8 @@ def resolve_reviewed_entry(
 
     # Verify evidence sentences.
     evidence_entry = entry.get("evidence") or []
+    if not bool(entry.get("answerable", True)) and evidence_entry:
+        return None, f"{example_id}: unanswerable entry must not have evidence"
     evidence_by_doc: Dict[str, List[str]] = {}
     for ev in evidence_entry:
         evidence_by_doc.setdefault(str(ev["doc_id"]), []).append(

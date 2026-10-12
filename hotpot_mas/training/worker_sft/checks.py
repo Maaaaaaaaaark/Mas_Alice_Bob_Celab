@@ -36,6 +36,7 @@ from .convert import (
     WorkerExample,
     is_answer_in_text,
     normalize_text,
+    split_sentences,
 )
 
 
@@ -83,18 +84,48 @@ def run_automatic_checks(example: WorkerExample) -> Dict[str, Any]:
         ),
     }
 
-    reasons: List[str] = []
+    evidence_reasons: List[str] = []
+    source_reasons: List[str] = []
     for ev in evidence:
-        ev_ok, reason = _evidence_ok(ev, example)
-        if not ev_ok:
-            reasons.append(reason)
+        try:
+            doc = example.document_by_id(ev.doc_id)
+        except KeyError as exc:
+            source_reasons.append(str(exc))
+            continue
+        if ev.sentence not in doc.text:
+            evidence_reasons.append(
+                f"evidence sentence not verbatim in {ev.doc_id}: "
+                f"{ev.sentence[:60]!r}"
+            )
     results["evidence_in_docs"] = {
-        "ok": not reasons,
-        "reason": "; ".join(reasons),
+        "ok": not evidence_reasons and not source_reasons,
+        "reason": "; ".join(source_reasons + evidence_reasons),
     }
     results["source_ids_valid"] = {
-        "ok": not reasons,
-        "reason": "; ".join(reasons),
+        "ok": not source_reasons,
+        "reason": "; ".join(source_reasons),
+    }
+
+    alignment_reasons: List[str] = []
+    for ev in evidence:
+        try:
+            doc = example.document_by_id(ev.doc_id)
+        except KeyError:
+            continue
+        if ev.sentence not in split_sentences(doc.text):
+            alignment_reasons.append(
+                f"{ev.doc_id}: evidence is not one complete splitter sentence"
+            )
+    if len(evidence) == 2 and (
+        evidence[0].doc_id != evidence[1].doc_id
+        or evidence[1].sentence_index != evidence[0].sentence_index + 1
+    ):
+        alignment_reasons.append(
+            "two evidence sentences must be consecutive in one document"
+        )
+    results["evidence_sentence_aligned"] = {
+        "ok": not alignment_reasons,
+        "reason": "; ".join(alignment_reasons),
     }
 
     offset_reasons: List[str] = []
@@ -102,6 +133,22 @@ def run_automatic_checks(example: WorkerExample) -> Dict[str, Any]:
         if ev.char_span is None:
             offset_reasons.append(
                 f"{ev.doc_id}: evidence sentence has no char span"
+            )
+            continue
+        try:
+            doc = example.document_by_id(ev.doc_id)
+        except KeyError as exc:
+            offset_reasons.append(str(exc))
+            continue
+        start, end = ev.char_span
+        if start < 0 or end < start or end > len(doc.text):
+            offset_reasons.append(
+                f"{ev.doc_id}: invalid char span {ev.char_span}"
+            )
+        elif doc.text[start:end] != ev.sentence:
+            offset_reasons.append(
+                f"{ev.doc_id}: char span {ev.char_span} does not match "
+                "the evidence sentence"
             )
     results["offsets_consistent"] = {
         "ok": not offset_reasons,
@@ -213,7 +260,7 @@ def example_matches_target_format(example: WorkerExample, target: str) -> Tuple[
         return False, f"more than two lines in target: {lines!r}"
     import re
 
-    line_re = re.compile(r'^D(\d+): "([^"]*)"$')
+    line_re = re.compile(r'^D(\d+): "(.*)"$')
     for line in lines:
         match = line_re.match(line)
         if not match:

@@ -31,7 +31,17 @@ def eligible_train(
         for e in examples
         if not e.excluded
         and e.split == "train"
+        and not e.probe
         and all(info["ok"] for info in e.checks.values())
+    ]
+    # Answer-string absence is not proof of unanswerability. Therefore
+    # automatically swapped MuSiQue sibling paragraphs stay in the audit
+    # file but cannot enter SFT until reviewed; official SQuAD 2.0
+    # negatives remain eligible.
+    eligible = [
+        e
+        for e in eligible
+        if e.answerable or e.source == "squad2" or is_reviewed(e)
     ]
     if require_reviewed:
         eligible = [e for e in eligible if is_reviewed(e)]
@@ -97,6 +107,40 @@ def select_mixture(
     rng.shuffle(pos_pool)
     rng.shuffle(neg_pool)
     return pos_pool[:positives] + neg_pool[:negatives]
+
+
+def _weighted_take(
+    pool: List[WorkerExample], count: int, weights: Dict[str, float], seed: int
+) -> List[WorkerExample]:
+    """Deterministic smooth weighted round-robin without duplication."""
+    if len(pool) < count:
+        raise ValueError(f"need {count} examples, only {len(pool)} eligible")
+    rng = random.Random(seed)
+    by_source: Dict[str, List[WorkerExample]] = {}
+    for example in sorted(pool, key=lambda e: e.example_id):
+        by_source.setdefault(example.source, []).append(example)
+    for values in by_source.values():
+        rng.shuffle(values)
+    scores = {source: 0.0 for source in by_source}
+    selected: List[WorkerExample] = []
+    while len(selected) < count:
+        available = [source for source, values in by_source.items() if values]
+        effective = {
+            source: max(float(weights.get(source, 1.0)), 0.0)
+            for source in available
+        }
+        if not any(effective.values()):
+            effective = {source: 1.0 for source in available}
+        total_weight = sum(effective.values())
+        for source in available:
+            scores[source] += effective[source]
+        chosen = min(
+            available,
+            key=lambda source: (-scores[source], source),
+        )
+        scores[chosen] -= total_weight
+        selected.append(by_source[chosen].pop())
+    return selected
 
 
 def plan_counts(
@@ -178,11 +222,27 @@ def select_smoke_or_normal(
     positives, negatives = plan_counts(
         eligible, config.mix.target_answerable_ratio, total
     )
-    selected = select_mixture(
-        eligible, positives, negatives, config.mix.selection_seed
+    source_weights = {
+        name: source.weight
+        for name, source in config.data.sources.items()
+        if source.enabled
+    }
+    pos_pool = [e for e in eligible if e.answerable]
+    neg_pool = [e for e in eligible if not e.answerable]
+    if len(pos_pool) < positives or len(neg_pool) < negatives:
+        # Reuse the detailed, label-specific error messages.
+        select_mixture(
+            eligible, positives, negatives, config.mix.selection_seed
+        )
+        raise AssertionError("unreachable")
+    selected = _weighted_take(
+        pos_pool, positives, source_weights, config.mix.selection_seed
+    ) + _weighted_take(
+        neg_pool, negatives, source_weights, config.mix.selection_seed + 1
     )
     report = source_mixture_report(selected)
     report["requested"] = {"total": total, "positive": positives, "negative": negatives}
+    report["source_weights"] = source_weights
     report["note"] = (
         "source weights are relative preferences, not quotas; samples are "
         "never duplicated to meet a target"

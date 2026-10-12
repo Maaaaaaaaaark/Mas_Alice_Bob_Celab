@@ -69,8 +69,13 @@ echo "==== worker-sft data prep (mode: $MODE) ===="
 PREP_ARGS=(--config "$CONFIG" --mode "$MODE")
 if [[ "${WORKER_SFT_FORCE_DATA:-0}" == "1" ]]; then
   PREP_ARGS+=(--force)
+  srun python -m hotpot_mas.training.cli prepare-worker-sft-data "${PREP_ARGS[@]}"
+elif [[ -f "outputs/worker_sft_data/${MODE}/prepared_train.jsonl" ]]; then
+  echo "prepared data already exists; reusing outputs/worker_sft_data/${MODE}"
+  echo "set WORKER_SFT_FORCE_DATA=1 to rebuild it explicitly"
+else
+  srun python -m hotpot_mas.training.cli prepare-worker-sft-data "${PREP_ARGS[@]}"
 fi
-srun python -m hotpot_mas.training.cli prepare-worker-sft-data "${PREP_ARGS[@]}"
 
 echo "==== worker-sft training (mode: $MODE) ===="
 RESUME_ARGS=()

@@ -91,8 +91,33 @@ def build_worker_sft_example(
             "chat template does not extend the generation prompt with the "
             "assistant turn: prefix construction failed at string level"
         )
-    prompt_ids = tokenizer(prompt_str, add_special_tokens=False)["input_ids"]
-    full_ids = tokenizer(full_str, add_special_tokens=False)["input_ids"]
+    prompt_ids = tokenizer.apply_chat_template(
+        messages, tokenize=True, add_generation_prompt=True
+    )
+    full_ids = tokenizer.apply_chat_template(
+        messages + [{"role": "assistant", "content": target}],
+        tokenize=True,
+        add_generation_prompt=False,
+    )
+    if isinstance(prompt_ids, torch.Tensor):
+        prompt_ids = prompt_ids.reshape(-1).tolist()
+    else:
+        prompt_ids = list(prompt_ids)
+    if isinstance(full_ids, torch.Tensor):
+        full_ids = full_ids.reshape(-1).tolist()
+    else:
+        full_ids = list(full_ids)
+    rendered_prompt_ids = list(
+        tokenizer(prompt_str, add_special_tokens=False)["input_ids"]
+    )
+    rendered_full_ids = list(
+        tokenizer(full_str, add_special_tokens=False)["input_ids"]
+    )
+    if prompt_ids != rendered_prompt_ids or full_ids != rendered_full_ids:
+        raise ValueError(
+            "chat template token ids disagree with tokenization of its "
+            "rendered string; prefix boundary is not reliable"
+        )
     if full_ids[: len(prompt_ids)] != prompt_ids:
         raise ValueError(
             "chat template tokenization does not preserve the prompt prefix"
@@ -101,13 +126,14 @@ def build_worker_sft_example(
     if len(full_ids) <= prompt_len:
         raise ValueError("assistant turn tokenized to zero tokens")
 
-    eos_token_id = tokenizer.eos_token_id
-    if eos_token_id is None:
-        raise ValueError("tokenizer has no eos_token_id")
-    if int(full_ids[-1]) != int(eos_token_id):
+    end_token_id = int(full_ids[-1])
+    special_ids = set(getattr(tokenizer, "all_special_ids", []) or [])
+    if tokenizer.eos_token_id is not None:
+        special_ids.add(int(tokenizer.eos_token_id))
+    if end_token_id not in special_ids:
         raise ValueError(
-            "the assistant turn does not end with the model's end-of-turn "
-            f"token (expected {eos_token_id}, got {int(full_ids[-1])})"
+            "the assistant turn does not end with a tokenizer special "
+            f"token (got token id {end_token_id})"
         )
 
     labels = torch.full(
@@ -116,7 +142,7 @@ def build_worker_sft_example(
     labels[prompt_len:] = torch.tensor(full_ids[prompt_len:], dtype=torch.long)
 
     readable_tokens = []
-    for token_id in full_ids.tolist():
+    for token_id in full_ids:
         try:
             readable = tokenizer.decode([token_id])
         except Exception:  # noqa: BLE001 - decode is best-effort
@@ -130,7 +156,7 @@ def build_worker_sft_example(
         target_token_ids=torch.tensor(
             full_ids[prompt_len:], dtype=torch.long
         ),
-        eos_token_id=int(eos_token_id),
+        eos_token_id=end_token_id,
         eos_position=len(full_ids) - 1,
         readable_tokens=readable_tokens,
     )
@@ -177,6 +203,14 @@ def accumulate_worker_sft_losses(
     regardless of how the accumulation group is split — the final
     partial group keeps the same per-example weighting.
     """
+    if len(counts) == 1 and counts[0] == len(losses):
+        # Individual per-example losses plus the size of their group.
+        return torch.stack(losses).mean()
+    if len(losses) != len(counts):
+        raise ValueError(
+            "losses and counts must have equal lengths unless counts "
+            "contains the single total number of per-example losses"
+        )
     total = sum(int(c) for c in counts)
     if total <= 0:
         raise ValueError("no examples accumulated")

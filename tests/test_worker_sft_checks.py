@@ -54,7 +54,7 @@ def test_evidence_not_verbatim_in_doc_fails():
     example.evidence[0].sentence = "The tower opened in 1899."
     results = run_automatic_checks(example)
     assert not results["evidence_in_docs"]["ok"]
-    assert not results["source_ids_valid"]["ok"]
+    assert results["source_ids_valid"]["ok"]
 
 
 def test_char_span_mismatch_fails_offsets_consistent():

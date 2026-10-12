@@ -29,11 +29,12 @@ INSTRUCTION = load_instruction(PROMPTS_WORKER_SFT_DIR)
 def two_doc_example(**kw: Any) -> Any:
     d0 = make_doc("d0", "The Louvre opened in 1793.", "Louvre")
     d1 = make_doc("d1", "The Eiffel Tower opened in 1889.", "Tower")
+    answer = kw.pop("answer", "1793")
     return make_example(
         "p1",
         "When did the Louvre open?",
         [d0, d1],
-        answer="1793",
+        answer=answer,
         evidence=[make_evidence("d0", "The Louvre opened in 1793.")],
         **kw,
     )
@@ -110,6 +111,16 @@ def test_parse_output_flags_malformed_lines():
     assert parse_output("").get("malformed")
 
 
+def test_parse_output_allows_quotes_inside_exact_sentence():
+    parsed = parse_output(
+        'D0: "It merged into \"Godey\'s Lady\'s Book\" in 1846."'
+    )
+    assert not parsed["malformed"]
+    assert parsed["lines"][0]["quote"] == (
+        'It merged into "Godey\'s Lady\'s Book" in 1846.'
+    )
+
+
 def test_evaluate_output_positive_is_correct_on_coverage():
     example = two_doc_example()
     ordered, _ = shuffle_and_remap(example, 0)
@@ -129,6 +140,14 @@ def test_evaluate_output_positive_requires_verbatim_quote():
     result = evaluate_output(
         example, ordered, 'D0: "The Louvre museum opened in 1793."'
     )
+    assert not result["quotes_verbatim"]
+    assert not result["correct"]
+
+
+def test_evaluate_output_requires_a_complete_sentence_not_substring():
+    example = two_doc_example()
+    ordered, _ = shuffle_and_remap(example, 0)
+    result = evaluate_output(example, ordered, 'D0: "opened in 1793"')
     assert not result["quotes_verbatim"]
     assert not result["correct"]
 

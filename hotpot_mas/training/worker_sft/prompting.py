@@ -25,11 +25,11 @@ import random
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from .convert import WorkerDocument, WorkerExample, normalize_text
+from .convert import WorkerDocument, WorkerExample, normalize_text, split_sentences
 
 NOT_FOUND = "NOT FOUND"
 
-_TARGET_LINE_RE = re.compile(r'^D(\d+): "([^"]*)"$')
+_TARGET_LINE_RE = re.compile(r'^D(\d+): "(.*)"$')
 
 
 def load_instruction(prompt_dir: Any) -> str:
@@ -140,6 +140,8 @@ def evaluate_output(
     selection).
     """
     parsed = parse_output(output_text)
+    if len(parsed["lines"]) > 2:
+        parsed["malformed"] = True
     result: Dict[str, Any] = {
         "output": output_text,
         "parse_ok": not parsed["malformed"],
@@ -190,7 +192,7 @@ def evaluate_output(
             )
             quotes_verbatim = False
             continue
-        verbatim = quote in doc_texts[position]
+        verbatim = quote in split_sentences(doc_texts[position])
         normalized_match = (
             normalize_text(quote) in doc_norm[position] if quote else False
         )
@@ -209,9 +211,16 @@ def evaluate_output(
         combined_norm = normalize_text(combined_quote)
         candidates = [example.answer] + list(example.answer_aliases)
         answer_covered = any(
-            c and normalize_text(c) in combined_norm for c in candidates
+            c
+            and normalize_text(c)
+            and f" {normalize_text(c)} " in f" {combined_norm} "
+            for c in candidates
         )
-    correct = answer_covered if example.answerable else False
+    correct = (
+        source_valid and quotes_verbatim and answer_covered
+        if example.answerable
+        else False
+    )
     result.update(
         {
             "source_valid": source_valid,

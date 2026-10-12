@@ -292,6 +292,22 @@ def test_within_train_dedup_removes_exact_duplicates_only():
     assert removed[0]["example_id"] == "a2"
 
 
+def test_within_train_dedup_prefers_reviewed_duplicate():
+    automatic = _example(
+        "auto", "Who built the bridge?", "The bridge is old."
+    )
+    automatic.review = {"status": "auto_checked"}
+    reviewed = _example(
+        "reviewed", "Who built the bridge?", "The bridge is old."
+    )
+    reviewed.review = {"status": "reviewed"}
+    kept, removed = apply_within_train_dedup(
+        [automatic, reviewed], 0.9, 0.95
+    )
+    assert [e.example_id for e in kept] == ["reviewed"]
+    assert [r["example_id"] for r in removed] == ["auto"]
+
+
 def test_within_train_dedup_exempts_probes():
     first = _example("a1", "Who built the bridge?", "The bridge is old.")
     probe = _example(
@@ -319,7 +335,7 @@ def test_within_train_dedup_keeps_same_question_with_different_docs():
     assert removed == []
 
 
-def test_within_train_dedup_removes_near_dup_paragraph():
+def test_within_train_dedup_keeps_same_paragraph_for_different_questions():
     first = _example(
         "a1", "Question about dogs?", "The blue mineral glows at night."
     )
@@ -327,8 +343,8 @@ def test_within_train_dedup_removes_near_dup_paragraph():
         "a2", "Question about cats?", "The blue mineral glows at night."
     )
     kept, removed = apply_within_train_dedup([first, other], 0.9, 0.95)
-    assert [e.example_id for e in kept] == ["a1"]
-    assert removed[0]["example_id"] == "a2"
+    assert [e.example_id for e in kept] == ["a1", "a2"]
+    assert removed == []
 
 
 # --------------------------------------------------------------------------

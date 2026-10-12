@@ -97,10 +97,10 @@ def test_section_a_reads_seeds_and_revision_only_from_snapshot(tmp_path):
     )
     assert section["run_id"] == "r1"
     assert section["model"]["real_model"] is False
-    # No revision pinned in the fixture config -> honest placeholder.
-    assert section["model"]["revision"] == (
-        "resolved at load time (pin and re-run to record)"
-    )
+    # A fake fixture has no resolved Hub commit; this is reported rather
+    # than pretending the moving default branch was pinned.
+    assert section["model"]["revision"] == "unavailable"
+    assert section["model"]["requested_revision"] is None
     assert section["seeds"]["seed"] == cfg.seed
     assert section["seeds"]["probe_seed"] == cfg.decode.probe_seed
 

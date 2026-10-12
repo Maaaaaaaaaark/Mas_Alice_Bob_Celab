@@ -82,10 +82,12 @@ class WorkerSFTTraceRecorder:
             "code_revision": _git_revision(),
             "model": {
                 "name": kw["model_info"].get("model_name"),
-                "revision": (
-                    model_cfg.get("revision")
-                    if model_cfg.get("revision") is not None
-                    else "resolved at load time (pin and re-run to record)"
+                "requested_revision": model_cfg.get("revision"),
+                "resolved_revision": kw["model_info"].get(
+                    "resolved_revision", "unavailable"
+                ),
+                "revision": kw["model_info"].get(
+                    "resolved_revision", "unavailable"
                 ),
                 "tokenizer_chat_template_sha256": kw["model_info"].get(
                     "chat_template_sha256"
@@ -486,6 +488,7 @@ def render_worker_sft_worked_example(trace_path: Any, out_path: Any) -> Path:
     lines.extend(_render_i(trace["I_generation"]))
     lines.extend(_render_j(trace["J_limits"]))
     out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out_path
 

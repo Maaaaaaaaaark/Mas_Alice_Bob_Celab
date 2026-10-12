@@ -167,7 +167,9 @@ class FakeWorkerModel(nn.Module):
         for param in self.base_linear.parameters():
             param.requires_grad = False
         # The trainer calls model.model.eval() / train() / named_parameters().
-        self.model = self
+        # Do not assign through nn.Module.__setattr__: registering a
+        # module as its own child makes .train()/.eval() recurse forever.
+        object.__setattr__(self, "model", self)
         self.model_name = "fake/worker-model"
         self._loaded_adapter = False
         self.chat_template_sha256 = hashlib.sha256(

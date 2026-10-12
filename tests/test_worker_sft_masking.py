@@ -70,6 +70,24 @@ def test_first_target_token_and_eot_are_supervised():
     assert sft_example.labels[-1].item() == tokenizer.eos_token_id
 
 
+def test_chat_turn_end_may_differ_from_tokenizer_eos():
+    class TurnEndTokenizer(FakeWorkerTokenizer):
+        @property
+        def all_special_ids(self):
+            return list(self.vocab.values())[:6]
+
+        def _render(self, messages, add_generation_prompt):
+            return super()._render(messages, add_generation_prompt).replace(
+                "<eos>", "<assistant_end>"
+            )
+
+    tokenizer = TurnEndTokenizer()
+    sft_example = build_worker_sft_example(tokenizer, MESSAGES, TARGET)
+    assert sft_example.eos_token_id == tokenizer.vocab["<assistant_end>"]
+    assert sft_example.eos_token_id != tokenizer.eos_token_id
+    assert sft_example.labels[-1].item() == sft_example.eos_token_id
+
+
 def test_prefix_stability_is_checked_at_string_and_token_level():
     class BrokenTokenizer(FakeWorkerTokenizer):
         def apply_chat_template(self, messages, tokenize=False,

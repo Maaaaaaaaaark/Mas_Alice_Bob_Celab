@@ -97,50 +97,61 @@ def prepare_worker_sft_data(
     loaders: Dict[str, Any] = {}
     all_examples: List[Any] = []
 
-    squad_rows, squad_provenance = load_squad2(
-        cfg.data.sources["squad2"].official_split
-    )
-    sources_report["squad2"] = {
-        "status": "loaded",
-        "rows": len(squad_rows),
-        "provenance": squad_provenance,
-    }
-    cap = cfg.data.sources["squad2"].max_candidates
-    for row in squad_rows:
-        if cap and len(
-            [e for e in all_examples if e.source == "squad2"]
-        ) >= cap:
-            break
-        for example in convert_squad2_row(row, dict(squad_provenance)):
-            all_examples.append(example)
+    squad_rows: List[Dict[str, Any]] = []
+    musique_rows: List[Dict[str, Any]] = []
+    hotpot_rows: List[Dict[str, Any]] = []
+    if cfg.data.sources["squad2"].enabled:
+        squad_rows, squad_provenance = load_squad2(
+            cfg.data.sources["squad2"].official_split
+        )
+        sources_report["squad2"] = {
+            "status": "loaded", "rows": len(squad_rows),
+            "provenance": squad_provenance,
+        }
+        cap = cfg.data.sources["squad2"].max_candidates
+        squad_count = 0
+        for row in squad_rows:
+            if cap and squad_count >= cap:
+                break
+            converted = convert_squad2_row(row, dict(squad_provenance))
+            all_examples.extend(converted)
+            squad_count += len(converted)
+    else:
+        sources_report["squad2"] = {"status": "disabled", "rows": 0}
 
-    musique_rows, musique_provenance = load_musique(
-        cfg.data.sources["musique"].official_split
-    )
-    sources_report["musique"] = {
-        "status": "loaded",
-        "rows": len(musique_rows),
-        "provenance": musique_provenance,
-    }
-    cap = cfg.data.sources["musique"].max_candidates
-    musique_count = 0
-    for row in musique_rows:
-        if cap and musique_count >= cap:
-            break
-        for example in convert_musique_row(row, dict(musique_provenance)):
-            all_examples.append(example)
-            musique_count += 1
+    if cfg.data.sources["musique"].enabled:
+        musique_rows, musique_provenance = load_musique(
+            cfg.data.sources["musique"].official_split
+        )
+        sources_report["musique"] = {
+            "status": "loaded", "rows": len(musique_rows),
+            "provenance": musique_provenance,
+        }
+        cap = cfg.data.sources["musique"].max_candidates
+        musique_count = 0
+        for row in musique_rows:
+            if cap and musique_count >= cap:
+                break
+            converted = convert_musique_row(row, dict(musique_provenance))
+            remaining = cap - musique_count if cap else len(converted)
+            converted = converted[:remaining]
+            all_examples.extend(converted)
+            musique_count += len(converted)
+    else:
+        sources_report["musique"] = {"status": "disabled", "rows": 0}
 
-    hotpot_rows, hotpot_provenance = load_hotpotqa_train()
-    sources_report["hotpot"] = {
-        "status": "loaded",
-        "rows": len(hotpot_rows),
-        "provenance": hotpot_provenance,
-        "training_example_source": (
-            "reviewed/teacher files only; no live teacher call, no auto "
-            "candidates from HotpotQA"
-        ),
-    }
+    if cfg.data.sources["hotpot"].enabled:
+        hotpot_rows, hotpot_provenance = load_hotpotqa_train()
+        sources_report["hotpot"] = {
+            "status": "loaded", "rows": len(hotpot_rows),
+            "provenance": hotpot_provenance,
+            "training_example_source": (
+                "reviewed/teacher files only; no live teacher call, no auto "
+                "candidates from HotpotQA"
+            ),
+        }
+    else:
+        sources_report["hotpot"] = {"status": "disabled", "rows": 0}
     loaders = build_reviewed_loaders(squad_rows, musique_rows, hotpot_rows)
 
     # 3. Reviewed file (hard error if it cannot be resolved at all).

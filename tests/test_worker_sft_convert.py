@@ -130,7 +130,7 @@ def _musique_row() -> Dict[str, Any]:
         "question": "Where was East of England birthed?",
         "question_decomposition": [
             {
-                "question": "What is #1 called?",
+                "question": "What is East of England called?",
                 "answer": "East of England",
                 "paragraph_support_idx": 0,
             },
@@ -191,7 +191,7 @@ def test_split_sentences_splits_on_boundary_punctuation():
     sentences = split_sentences(text)
     assert sentences[0] == "First sentence."
     assert sentences[1] == "Second one!"
-    assert "Quoted." in sentences
+    assert '"Quoted."' in sentences
 
 
 def test_evidence_sentences_for_answer_missing_answer_fails():
@@ -355,3 +355,41 @@ def test_load_teacher_file_loads_jsonl_entries(tmp_path):
     entries, status = load_teacher_file(path)
     assert [e["example_id"] for e in entries] == ["t1", "t2"]
     assert status["status"] == "loaded"
+
+
+def test_resolve_hotpot_reviewed_entry_reads_official_context_shape():
+    row = {
+        "id": "hp-row-1",
+        "question": "When did it begin?",
+        "context": {
+            "title": ["Relevant", "Distractor"],
+            "sentences": [
+                ["The magazine began in 1989.", "It is still published."],
+                ["This paragraph is unrelated."],
+            ],
+        },
+    }
+    entry = {
+        "example_id": "reviewed-hp-1",
+        "source": "hotpot",
+        "pointer": {"row_id": "hp-row-1", "titles": ["Relevant"]},
+        "split": "train",
+        "local_question": "When did the magazine begin?",
+        "original_question": "When did it begin?",
+        "answer": "1989",
+        "answer_aliases": [],
+        "answerable": True,
+        "documents": [{"doc_id": "d0", "title": "Relevant"}],
+        "evidence": [
+            {"doc_id": "d0", "sentence": "The magazine began in 1989."}
+        ],
+        "substitutions": [],
+        "review": {"status": "reviewed", "method": "fixture"},
+    }
+    example, problem = resolve_reviewed_entry(
+        entry, {"hotpot": lambda pointer: row}
+    )
+    assert problem is None
+    assert example is not None
+    assert example.documents[0].title == "Relevant"
+    assert example.evidence[0].sentence == "The magazine began in 1989."

@@ -104,12 +104,12 @@ class WorkerSFTDataConfig:
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "WorkerSFTDataConfig":
-        sources = {}
+        defaults = cls()
+        sources = copy.deepcopy(defaults.sources)
         for name, source_raw in (raw.get("sources") or {}).items():
             sources[str(name)] = SourceConfig.from_dict(
                 str(name), source_raw or {}
             )
-        defaults = cls()
         return cls(
             reviewed_file=_resolve_path(
                 raw.get("reviewed_file", defaults.reviewed_file)

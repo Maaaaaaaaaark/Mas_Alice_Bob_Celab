@@ -208,7 +208,10 @@ class WorkerSFTTrainer:
 
         # Fixed probe inputs (prompts only; same inputs before/after).
         fixed_inputs: List[Dict[str, Any]] = []
-        for example in train_examples:
+        fixed_training_examples = (
+            train_examples if self.mode == "trace" else train_examples[:4]
+        )
+        for example in fixed_training_examples:
             messages, target = build_messages(
                 example, self.instruction, _example_shuffle_seed(
                     example.example_id, order_seed
@@ -242,9 +245,13 @@ class WorkerSFTTrainer:
         # PeftModel), so the optimizer is constructed afterwards — an
         # optimizer built earlier would keep references to dead tensors
         # and every step would be a silent no-op.
-        start_step, start_flat_index, resume_ckpt, saved_optimizer_state = (
-            self._maybe_resume(model)
-        )
+        (
+            start_step,
+            start_flat_index,
+            resume_ckpt,
+            saved_optimizer_state,
+            saved_scheduler_state,
+        ) = self._maybe_resume(model)
 
         # Optimizer: AdamW over trainable (LoRA) parameters only.
         trainable = list(model.trainable_parameters())
@@ -261,15 +268,20 @@ class WorkerSFTTrainer:
             from ..policy import restore_optimizer_state
 
             restore_optimizer_state(optimizer, saved_optimizer_state)
-        num_steps = len(train_order) * cfg.sft.num_epochs
-        scheduler = self._build_scheduler(optimizer, num_steps)
-
         # Group plan (before training; never changes).
         group_sizes = []
         for _ in range(cfg.sft.num_epochs):
             group_sizes.extend(
                 _plan_groups(len(train_order), cfg.sft.grad_accum_steps)
             )
+        scheduler = self._build_scheduler(optimizer, len(group_sizes))
+        if saved_scheduler_state is not None:
+            if scheduler is None:
+                raise ValueError(
+                    "checkpoint contains scheduler state but current config "
+                    "has scheduler=none"
+                )
+            scheduler.load_state_dict(saved_scheduler_state)
 
         self.metrics_writer = JsonlWriter(self.stage_dir / "metrics.jsonl")
 
@@ -352,14 +364,15 @@ class WorkerSFTTrainer:
                 else None
             )
             update_loss = sum(group_losses) / group_size
+            completed_step = step + 1
             checkpoint = None
             if self.mode == "trace":
                 checkpoint = self._save_checkpoint(
-                    model, optimizer, step, flat_index
+                    model, optimizer, scheduler, completed_step, flat_index
                 )
             per_step_records.append(
                 {
-                    "step": step,
+                    "step": completed_step,
                     "epoch": epoch,
                     "microsteps": group_size,
                     "learning_rate": float(
@@ -377,7 +390,7 @@ class WorkerSFTTrainer:
             )
             self._write_metrics(per_step_records[-1])
             group_index += 1
-            step += 1
+            step = completed_step
 
         # Frozen-base evidence (after).
         base_hash_after = model.base_param_hash(
@@ -407,7 +420,9 @@ class WorkerSFTTrainer:
             ]
 
         # Checkpoints and outputs.
-        final_ckpt = self._save_checkpoint(model, optimizer, step, flat_index)
+        final_ckpt = self._save_checkpoint(
+            model, optimizer, scheduler, step, flat_index
+        )
         config_snapshot = cfg.to_dict()
         config_snapshot["_mode"] = self.mode
         config_snapshot["optimizer"] = {
@@ -534,7 +549,13 @@ class WorkerSFTTrainer:
 
     def _maybe_resume(
         self, model: Any
-    ) -> Tuple[int, int, Optional[Path], Optional[Dict[str, Any]]]:
+    ) -> Tuple[
+        int,
+        int,
+        Optional[Path],
+        Optional[Dict[str, Any]],
+        Optional[Dict[str, Any]],
+    ]:
         """Load this run's own checkpoint adapter (resume).
 
         Returns ``(start_step, start_flat_index, adapter_dir,
@@ -544,7 +565,7 @@ class WorkerSFTTrainer:
         HF wrapper replaces the adapter modules entirely).
         """
         if not self.resume:
-            return 0, 0, None, None
+            return 0, 0, None, None, None
         # Checkpoints live in step_*/state.json; resume from the latest
         # step so a preempted run continues exactly where it stopped.
         step_dirs = sorted(
@@ -568,15 +589,42 @@ class WorkerSFTTrainer:
                 f"resume adapter missing: {adapter_dir}"
             )
         model.load_adapter(adapter_dir)
+        optimizer_path = step_dirs[-1] / "optimizer.pt"
+        if not optimizer_path.is_file():
+            raise FileNotFoundError(
+                f"resume optimizer state missing: {optimizer_path}"
+            )
+        try:
+            optimizer_state = torch.load(
+                optimizer_path, map_location="cpu", weights_only=False
+            )
+        except TypeError:  # PyTorch < 2.6
+            optimizer_state = torch.load(optimizer_path, map_location="cpu")
+        scheduler_path = step_dirs[-1] / "scheduler.pt"
+        scheduler_state = None
+        if scheduler_path.is_file():
+            try:
+                scheduler_state = torch.load(
+                    scheduler_path, map_location="cpu", weights_only=False
+                )
+            except TypeError:
+                scheduler_state = torch.load(
+                    scheduler_path, map_location="cpu"
+                )
         return (
             int(state["step"]),
             int(state.get("flat_index", 0)),
             adapter_dir,
-            state.get("optimizer_state"),
+            optimizer_state,
+            scheduler_state,
         )
 
     def _save_checkpoint(
-        self, model: Any, optimizer: torch.optim.Optimizer, step: int,
+        self,
+        model: Any,
+        optimizer: torch.optim.Optimizer,
+        scheduler: Optional[Any],
+        step: int,
         flat_index: int,
     ) -> Path:
         from ..policy import remap_optimizer_state
@@ -584,15 +632,26 @@ class WorkerSFTTrainer:
         step_dir = self.stage_dir / f"step_{step:05d}"
         adapter_dir = step_dir / "adapter"
         model.save_adapter(adapter_dir)
+        optimizer_state = remap_optimizer_state(
+            optimizer,
+            [
+                name
+                for name, param in model.model.named_parameters()
+                if param.requires_grad
+            ],
+        )
+        torch.save(optimizer_state, step_dir / "optimizer.pt")
+        if scheduler is not None:
+            torch.save(scheduler.state_dict(), step_dir / "scheduler.pt")
         state = {
             "step": step,
             "flat_index": flat_index,
             "experiment_version": self.cfg.experiment_version,
             "mode": self.mode,
             "run_config": self.cfg.to_dict(),
-            "optimizer_state": remap_optimizer_state(
-                optimizer, [name for name, _ in model.model.named_parameters()
-                            if _.requires_grad]
+            "optimizer_state_path": "optimizer.pt",
+            "scheduler_state_path": (
+                "scheduler.pt" if scheduler is not None else None
             ),
         }
         import json as _json

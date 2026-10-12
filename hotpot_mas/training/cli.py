@@ -209,7 +209,10 @@ def cmd_render_worker_sft_trace(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m hotpot_mas.training.cli",
-        description="Cross-paired GRPO training (Stage 1 workers).",
+        description=(
+            "Hotpot multi-agent training and diagnostics (GRPO workers, "
+            "synthesizer SFT, and independent worker SFT)."
+        ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

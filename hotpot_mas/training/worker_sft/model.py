@@ -52,6 +52,11 @@ class HFLoraWorkerModel:
             revision=cfg.model.revision,
             torch_dtype=torch_dtype,
         )
+        self.resolved_revision = (
+            getattr(self.base_model.config, "_commit_hash", None)
+            or cfg.model.revision
+            or "unavailable"
+        )
 
         # Fresh adapter only: nothing is loaded from any previous
         # experiment.
@@ -67,6 +72,7 @@ class HFLoraWorkerModel:
         )
         self.model = get_peft_model(self.base_model, lora_config)
         self.model.to(self.device_name)
+        self._stop_token_ids = self._resolve_stop_token_ids()
 
         self._resolved_lora_modules = self._resolve_lora_modules()
         if not self._resolved_lora_modules:
@@ -109,6 +115,26 @@ class HFLoraWorkerModel:
             if name.endswith("lora_A") or name.endswith("lora_B"):
                 modules.append(name)
         return sorted(modules)
+
+    def _resolve_stop_token_ids(self) -> List[int]:
+        """Resolve model EOS plus the chat template's turn-end token."""
+        ids = set()
+        configured = getattr(self.model.generation_config, "eos_token_id", None)
+        values = configured if isinstance(configured, (list, tuple)) else [configured]
+        ids.update(int(value) for value in values if value is not None)
+        if self.tokenizer.eos_token_id is not None:
+            ids.add(int(self.tokenizer.eos_token_id))
+        probe = self.tokenizer.apply_chat_template(
+            [
+                {"role": "user", "content": "x"},
+                {"role": "assistant", "content": "x"},
+            ],
+            tokenize=True,
+            add_generation_prompt=False,
+        )
+        if probe:
+            ids.add(int(probe[-1]))
+        return sorted(ids)
 
     def _audit_frozen_base(self) -> Dict[str, Any]:
         unfrozen = []
@@ -222,24 +248,29 @@ class HFLoraWorkerModel:
             return_tensors="pt",
         ).to(self.device_name)
         prompt_len = ids.shape[1]
-        eos = self.tokenizer.eos_token_id
         generated: List[int] = []
         with torch.no_grad():
             past = None
             current = ids
             for _ in range(max_new_tokens):
-                output = self.model(input_ids=current, use_cache=True)
+                output = self.model(
+                    input_ids=current,
+                    past_key_values=past,
+                    use_cache=True,
+                )
                 past = output.past_key_values
                 next_logits = output.logits[:, -1, :]
                 next_id = int(next_logits.argmax(dim=-1).item())
                 generated.append(next_id)
-                if eos is not None and next_id == int(eos):
+                if next_id in self._stop_token_ids:
                     break
                 current = torch.tensor(
                     [[next_id]], device=self.device_name, dtype=torch.long
                 )
         finish_reason = (
-            "eos" if generated and generated[-1] == int(eos) else "length"
+            "eos"
+            if generated and generated[-1] in self._stop_token_ids
+            else "length"
         )
         token_ids = ids.tolist()[0] + generated
         text = self.tokenizer.decode(
@@ -258,16 +289,21 @@ class HFLoraWorkerModel:
 
     def load_adapter(self, directory: Any) -> None:
         """Load ONLY this run's own checkpoint adapter (resume)."""
-        from peft import PeftModel
-
-        self.model = PeftModel.from_pretrained(
-            self.base_model, str(directory), is_trainable=True
+        resume_name = "worker_sft_resume"
+        self.model.load_adapter(
+            str(directory), adapter_name=resume_name, is_trainable=True
         )
+        self.model.set_adapter(resume_name)
+        if "default" in self.model.peft_config:
+            self.model.delete_adapter("default")
         self.model.to(self.device_name)
+        self._resolved_lora_modules = self._resolve_lora_modules()
+        self._frozen_audit = self._audit_frozen_base()
 
     def info(self) -> Dict[str, Any]:
         return {
             "model_name": self.model_name,
+            "resolved_revision": self.resolved_revision,
             "device": self.device_name,
             "dtype": self._dtype,
             "dtype_reason": self.dtype_reason,
@@ -279,6 +315,7 @@ class HFLoraWorkerModel:
             "frozen_audit": self._frozen_audit,
             "chat_template_sha256": self.chat_template_sha256,
             "max_input_tokens": self.cfg.model.max_input_tokens,
+            "resolved_stop_token_ids": self._stop_token_ids,
             "fresh_adapter": True,
             "loaded_previous_adapter": False,
         }

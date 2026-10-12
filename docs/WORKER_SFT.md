@@ -192,7 +192,8 @@ WORKER_SFT_RESUME=1 sbatch scripts/violet_worker_sft.sbatch   # continue
   `splits.json`, `lengths_report.json` (after inspect).
 - `outputs/worker_sft/worker_sft/<version>/` — `config_snapshot.json`,
   `metrics.jsonl`, `fixed_example_outputs.json`, per-step checkpoints
-  (`step_*/adapter/` + `state.json`; resume continues from the latest),
+  (`step_*/adapter/` + `optimizer.pt` + `state.json`; resume continues
+  from the latest),
   and in trace mode `trace.json` +
   `worked_example_worker_sft.md`.
 

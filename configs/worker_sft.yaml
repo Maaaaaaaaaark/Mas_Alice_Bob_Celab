@@ -4,12 +4,12 @@
 # gemma-3-1b-it. No coordinator, no RL, no routing, no joint training.
 # Every effective default (weight decay, scheduler, ...) is recorded in
 # each run's config snapshot. Run modes are deep-merged over the base:
-#   trace  - 10 reviewed examples, 7 positive / 3 negative, 1 microstep
-#            per optimizer step, checkpoint per step, worked example
+#   trace  - 10 reviewed examples, 7 positive / 3 negative, one effective
+#            token-normalized update, checkpoint + worked example
 #   smoke  - larger functional check (64 examples)
-#   normal - full training set (4096 examples), grad-accum 8
+#   normal - full training set (4096 examples), effective batch 16
 
-experiment_id: worker_sft
+experiment_id: worker_sft_token_mean_v1
 experiment_version: v0
 seed: 0
 output_dir: outputs/worker_sft
@@ -74,15 +74,15 @@ model:
 
 sft:
   num_epochs: 1
-  learning_rate: 1.0e-5
+  learning_rate: 1.0e-4
   weight_decay: 0.0
   adam_betas: [0.9, 0.999]
   adam_eps: 1.0e-8
   microbatch_size: 1
-  grad_accum_steps: 8            # normal run; trace overrides to 1
+  grad_accum_steps: 16
   max_grad_norm: 1.0
-  scheduler: none                # fixed lr; "linear" available with warmup
-  warmup_ratio: 0.0
+  scheduler: linear              # warmup followed by linear decay
+  warmup_ratio: 0.05
   seed: 0
   example_order_seed: 0
 
@@ -105,7 +105,9 @@ modes:
       trace_positives: 7
       trace_negatives: 3
     sft:
-      grad_accum_steps: 1        # 10 examples -> 10 optimizer steps
+      grad_accum_steps: 10       # 10 examples -> one effective update
+      scheduler: none            # a one-update trace has no useful schedule
+      warmup_ratio: 0.0
     review:
       require_reviewed_for_training: true
   smoke:

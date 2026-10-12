@@ -72,6 +72,12 @@ is verbatim source sentences with display ids, or exactly `NOT FOUND`.
   consistent, no unresolved `#N` references, nothing would be truncated,
   and the rendered target matches the output format. Failures exclude
   the example with a recorded reason.
+- **Negative answerability gate:** answer/alias string matching is only
+  an audit flag. A hit must be reviewed for the entity/relation, and a
+  miss never proves unanswerability. Official SQuAD 2.0 negatives keep
+  their official labels. Constructed negatives may train only after a
+  recorded semantic decision (`answerable`, `unanswerable`, or
+  `uncertain`) with evidence/reason; uncertain examples are excluded.
 - **Review status is separate.** Auto-checked is NEVER reported as
   human-verified. The review status records the reviewer, method, and
   provenance. Weak labels never silently enter training
@@ -97,16 +103,18 @@ inside the gold assistant turn it is asked "what is the next token?".
 The gold text is fed in directly; nothing is generated and then
 aligned.
 
-For one example with supervised positions `P`:
+For one effective accumulation group with supervised positions `P`:
 
 ```
-L_example = (1/|P|) * sum over p in P of  -log P(correct token at p | prefix)
+L_update = (1/|P|) * sum over p in P of  -log P(correct token at p | prefix)
 ```
 
-That is: the average, over the supervised target tokens, of the
-negative log-probability of the correct token given everything before
-it. The update loss for one optimizer step is the mean of the example
-losses in its accumulation group.
+`P` contains every supervised target token from every example in the
+effective batch. The denominator is the total target-token count, not
+the number of examples. Per-example mean losses are diagnostics only;
+they are not averaged to form the update. This prevents a short
+`NOT FOUND` target from receiving a larger per-token coefficient than a
+long quotation.
 
 **Causal alignment:** a causal LM's logits at position `t` predict the
 token at position `t+1`, so the code aligns `logits[:, :-1]` with
@@ -123,31 +131,33 @@ Stage 2 synthesizer SFT (mask everything except a gold answer inside
 Celab/`<FINAL>` wrappers) is deliberately NOT copied here.
 
 **Parameter updates:** only LoRA parameters are passed to the optimizer
-(AdamW, defaults `lr=1e-5`, `weight_decay=0.0`, `betas=[0.9, 0.999]`,
-`eps=1e-8`, `scheduler=none`, `warmup=0.0`, clip `1.0`, `bf16` when
+(AdamW, defaults `lr=1e-4`, `weight_decay=0.0`, `betas=[0.9, 0.999]`,
+`eps=1e-8`, linear warmup/decay with `warmup_ratio=0.05`, clip `1.0`, `bf16` when
 supported, seed 0, 1 epoch). Every effective value is recorded in the
 run's config snapshot. The base model is verified frozen twice: a
 `requires_grad` audit at load time and a sha256 hash of the base
 parameters before and after training.
 
-**Gradient accumulation:** microbatch = 1 example; each microbatch
-backward is scaled by `1/group_size`, where the group sizes are planned
-BEFORE training from the deterministic example order (normal run
-`grad_accum=8`; trace `1`). The final partial group therefore keeps
-every example's exact weight — the loss never depends on where the
-group boundary falls.
+**Gradient accumulation:** microbatch = 1 example. Before an effective
+batch starts, the trainer counts all of its supervised target tokens.
+Each microbatch backpropagates its NLL sum divided by that shared count,
+so accumulated gradients exactly equal `sum(NLL) / total target tokens`
+(normal run effective batch 16; trace 10). Prompt and padding tokens are
+excluded after the causal shift. The final partial group uses its own
+actual token count.
 
 ## 6. Run modes
 
 | Mode | Purpose |
 |---|---|
-| `trace` | The first real run: 10 examples (7 answerable / 3 unanswerable, all three sources when valid prepared samples exist, at least one two-sentence target, single-document by default), microbatch 1, grad-accum 1, 1 epoch = exactly 10 optimizer steps. Requires reviewed training examples. Writes the full structured trace and `worked_example_worker_sft.md` (sections A–J). Missing requirements are reported honestly — never fabricated. |
+| `trace` | The first real run: 10 examples (7 answerable / 3 unanswerable, all three sources when valid prepared samples exist, at least one two-sentence target, single-document by default), microbatch 1, grad-accum 10, 1 epoch = one token-normalized optimizer update. Requires reviewed training examples. Writes the full structured trace and `worked_example_worker_sft.md` (sections A–J). Missing requirements are reported honestly — never fabricated. |
 | `smoke` | Larger functional check (default 64 examples) with grad-accum. |
-| `normal` | The real training run (default 4096 examples, grad-accum 8). |
+| `normal` | The real training run (default 4096 examples, effective batch 16). |
 
 The trace also runs a small fixed before/after generation comparison
-(same inputs, greedy decoding). The 10 steps are NOT expected to
-improve outputs, and the worked example says so.
+(same inputs, greedy decoding). One update is NOT expected to improve
+outputs, and the worked example says so. False abstention, false answer,
+and parse failure are reported separately.
 
 ## 7. Commands
 
@@ -165,13 +175,13 @@ python -m hotpot_mas.training.cli prepare-worker-sft-data \
 python -m hotpot_mas.training.cli inspect-worker-sft-lengths \
   --config configs/worker_sft.yaml --mode trace
 
-# train (first run: trace = 10 optimizer steps)
+# train (first run: trace = one effective-batch update)
 python -m hotpot_mas.training.cli train-worker-sft \
   --config configs/worker_sft.yaml --mode trace
 
 # re-render the worked example from the trace, any time, no GPU:
 python -m hotpot_mas.training.cli render-worker-sft-trace \
-  --trace outputs/worker_sft/worker_sft/trace/trace.json
+  --trace outputs/worker_sft/worker_sft_token_mean_v1/trace/trace.json
 ```
 
 Cluster (from the repository root; the script checks the GPU it
@@ -196,6 +206,11 @@ WORKER_SFT_RESUME=1 sbatch scripts/violet_worker_sft.sbatch   # continue
   from the latest),
   and in trace mode `trace.json` +
   `worked_example_worker_sft.md`.
+
+Smoke/normal runs also write `validation_metrics.json`, separating false
+abstention, false answer, parse failure, and strict quote failure. These
+must be read together; a single aggregate accuracy cannot distinguish an
+over-cautious worker from one that fabricates answers.
 
 Every run gets a unique run id; existing artifacts are never silently
 overwritten (`--force`/`--resume` are explicit).

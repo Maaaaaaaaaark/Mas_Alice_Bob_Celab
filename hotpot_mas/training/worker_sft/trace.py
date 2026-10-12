@@ -321,17 +321,25 @@ class WorkerSFTTraceRecorder:
             )
         update_rows = []
         for record in kw["per_step_records"]:
+            token_counts = record["per_example_supervised_tokens"]
+            nll_sums = [
+                loss * count
+                for loss, count in zip(
+                    record["per_example_losses"], token_counts
+                )
+            ]
             update_rows.append(
                 {
                     "step": record["step"],
                     "update_loss": record["update_loss"],
+                    "supervised_tokens": record["supervised_tokens"],
                     "arithmetic": (
-                        "mean of the group's per-example losses "
-                        f"({record['microsteps']} examples): "
+                        "sum of all target-token NLLs in the effective "
+                        f"batch ({record['microsteps']} examples): ("
                         + " + ".join(
-                            f"{x:.6f}" for x in record["per_example_losses"]
+                            f"{x:.6f}" for x in nll_sums
                         )
-                        + f" / {record['microsteps']}"
+                        + f") / {record['supervised_tokens']} tokens"
                         + f" = {record['update_loss']:.6f}"
                     ),
                 }
@@ -341,10 +349,11 @@ class WorkerSFTTraceRecorder:
                 "plain English: the model reads the full prompt and is "
                 "asked 'what is the next token?' at every position of the "
                 "gold assistant turn. Each answer's probability becomes "
-                "that token's negative log-likelihood (NLL); the example "
-                "loss is the mean NLL over its supervised tokens; the "
-                "update loss is the mean of the example losses in the "
-                "accumulation group. There is no generated-then-aligned "
+                "that token's negative log-likelihood (NLL). The update "
+                "loss sums every target-token NLL in the effective batch "
+                "and divides once by the total number of target tokens. "
+                "Per-example means below are diagnostics only. There is "
+                "no generated-then-aligned "
                 "text: the target text is fed to the model directly."
             ),
             "per_example": per_example,
@@ -389,10 +398,12 @@ class WorkerSFTTraceRecorder:
             )
         return {
             "decode": kw["config_snapshot"].get("decode", {}),
+            "pre_summary": _generation_summary(kw["fixed_inputs"], "pre"),
+            "post_summary": _generation_summary(kw["fixed_inputs"], "post"),
             "note": (
                 "same inputs, same deterministic greedy decoding before "
-                "and after training; the 10 optimizer steps of the trace "
-                "are NOT expected to improve outputs"
+                "and after training; the trace's single effective-batch "
+                "update is NOT expected to improve outputs"
             ),
             "inputs": rows,
         }
@@ -412,7 +423,7 @@ class WorkerSFTTraceRecorder:
                 "base weights were unchanged by training (see H)",
             ],
             "not_established": [
-                "the 10-step trace run is not expected to improve the "
+                "the one-update trace run is not expected to improve the "
                 "worker; it only demonstrates the pipeline end to end",
                 "no quantitative evaluation on the frozen val/test was "
                 "run in trace mode (deferred)",
@@ -421,7 +432,7 @@ class WorkerSFTTraceRecorder:
                 "phase (only fixed multi-doc probes exist today)",
             ],
             "deferred": [
-                "smoke and normal runs with gradient accumulation 8",
+                "smoke and normal runs with effective batch 16",
                 "validation-based checkpoint selection",
                 "multi-document training phase (1-5 docs, easy "
                 "distractors first)",
@@ -434,6 +445,31 @@ class WorkerSFTTraceRecorder:
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
+
+
+def _generation_summary(
+    fixed_inputs: List[Dict[str, Any]], stage: str
+) -> Dict[str, Any]:
+    """Compact, label-aware error summary for fixed trace generations."""
+    rows = [(item["example"], item[stage]["checks"]) for item in fixed_inputs]
+    positives = [checks for example, checks in rows if example.answerable]
+    negatives = [checks for example, checks in rows if not example.answerable]
+    false_abstentions = sum(checks["abstained"] for checks in positives)
+    false_answers = sum(not checks["abstained"] for checks in negatives)
+    parse_failures = sum(not checks["parse_ok"] for _, checks in rows)
+    return {
+        "examples": len(rows),
+        "answerable_examples": len(positives),
+        "unanswerable_examples": len(negatives),
+        "false_abstentions": false_abstentions,
+        "false_abstention_rate": (
+            false_abstentions / len(positives) if positives else None
+        ),
+        "false_answers": false_answers,
+        "false_answer_rate": false_answers / len(negatives) if negatives else None,
+        "parse_failures": parse_failures,
+        "parse_failure_rate": parse_failures / len(rows) if rows else None,
+    }
 
 def _git_revision() -> str:
     import subprocess
@@ -716,7 +752,7 @@ def _render_g(section: Dict[str, Any]) -> List[str]:
         lines.append("")
         lines.append(f"- arithmetic: {row['arithmetic']}")
         lines.append("")
-    lines.append("### Update losses (mean of the group's example losses)")
+    lines.append("### Update losses (mean over all target tokens)")
     lines.append("")
     lines.append("| step | update loss | arithmetic |")
     lines.append("|---|---|---|")
@@ -781,6 +817,17 @@ def _render_i(section: Dict[str, Any]) -> List[str]:
     )
     lines.append("")
     lines.append(section.get("note", ""))
+    lines.append("")
+    for stage in ("pre", "post"):
+        summary = section.get(f"{stage}_summary", {})
+        lines.append(
+            f"- {stage} summary: false abstention "
+            f"{summary.get('false_abstentions')}/"
+            f"{summary.get('answerable_examples')}; false answer "
+            f"{summary.get('false_answers')}/"
+            f"{summary.get('unanswerable_examples')}; parse failures "
+            f"{summary.get('parse_failures')}/{summary.get('examples')}"
+        )
     lines.append("")
     for row in section.get("inputs", []):
         lines.append(f"### {row['example_id']} ({row['kind']})")

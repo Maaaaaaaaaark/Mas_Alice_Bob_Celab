@@ -133,22 +133,19 @@ def test_per_example_loss_is_mean_over_supervised_tokens():
     assert loss.item() == pytest.approx(-torch.log(torch.tensor(1 / 7)).item())
 
 
-def test_accumulate_worker_sft_losses_keeps_per_example_weighting():
-    # Group of 3 examples split 2 + 1 (a partial accumulation group).
-    losses = [torch.tensor(0.5), torch.tensor(1.0), torch.tensor(2.0)]
-    update = accumulate_worker_sft_losses(losses[:2], [2]).item()
-    assert update == pytest.approx((0.5 + 1.0) / 2)
-    # Combined across a boundary: (0.5 + 1.0 + 2.0) / 3 either way.
-    total = accumulate_worker_sft_losses(losses, [3]).item()
-    partial = accumulate_worker_sft_losses(
-        [torch.tensor(0.75), torch.tensor(2.0)], [2, 1]
-    ).item()
-    assert total == pytest.approx(3.5 / 3)
-    assert partial == pytest.approx((0.75 * 2 + 2.0) / 3)
+def test_accumulate_worker_sft_losses_uses_target_token_weighting():
+    # One long positive: mean NLL 0.5 across 40 tokens.
+    # One short negative: mean NLL 2.0 across 4 tokens.
+    nll_sums = [torch.tensor(20.0), torch.tensor(8.0)]
+    update = accumulate_worker_sft_losses(nll_sums, [40, 4]).item()
+    assert update == pytest.approx(28.0 / 44.0)
+    # It must not equal the per-example mean, which would over-weight the
+    # short NOT FOUND example.
+    assert update != pytest.approx((0.5 + 2.0) / 2.0)
 
 
 def test_accumulate_refuses_no_examples():
-    with pytest.raises(ValueError, match="no examples"):
+    with pytest.raises(ValueError, match="no supervised tokens"):
         accumulate_worker_sft_losses([], [])
 
 

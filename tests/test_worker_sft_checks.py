@@ -75,13 +75,16 @@ def test_evidence_without_answer_fails_answer_covered():
     assert not results["answer_covered"]["ok"]
 
 
-def test_answer_in_visible_docs_refutes_negative():
+def test_answer_in_visible_docs_flags_negative_for_semantic_review():
     example = _negative()
     example.documents[0] = make_doc("d0", "It was founded in 1920.")
     example.documents[0].normalized_text = "it was founded in 1920"
     results = run_automatic_checks(example)
-    assert not results["basic_answer_absence"]["ok"]
-    assert "presence does refute" in results["basic_answer_absence"]["reason"]
+    screen = results["answer_string_screen"]
+    assert screen["ok"]
+    assert screen["flagged"]
+    assert screen["present_in"] == ["d0"]
+    assert "review the entity/relation" in screen["reason"]
 
 
 def test_negative_without_reason_fails():

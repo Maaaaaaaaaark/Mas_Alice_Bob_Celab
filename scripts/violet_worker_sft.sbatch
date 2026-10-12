@@ -90,6 +90,6 @@ srun python -m hotpot_mas.training.cli train-worker-sft \
 echo "==== outputs ===="
 echo "Exact paths are printed by the CLI above (final_checkpoint /"
 echo "worked_example / stage_dir). In trace mode the worked example is:"
-echo "  outputs/worker_sft/worker_sft/trace/worked_example_worker_sft.md"
-echo "  outputs/worker_sft/worker_sft/trace/step_*/adapter/"
+echo "  outputs/worker_sft/worker_sft_token_mean_v1/trace/worked_example_worker_sft.md"
+echo "  outputs/worker_sft/worker_sft_token_mean_v1/trace/step_*/adapter/"
 echo "  outputs/worker_sft_data/trace/ (prepared data + dedup + label reports)"

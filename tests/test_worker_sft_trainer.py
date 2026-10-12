@@ -8,6 +8,7 @@ honestly. Real training runs on the cluster with the real model.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, List
 
@@ -109,7 +110,7 @@ def test_smoke_training_runs_grad_accumulation_with_partial_group(tmp_path):
     )
 
     # 5 examples, group sizes [3, 2]: the final PARTIAL group keeps
-    # per-example weighting and still produces exactly 2 optimizer steps.
+    # target-token weighting and still produces exactly 2 optimizer steps.
     assert outcome["optimizer_steps"] == 2
     assert outcome["base_weights_unchanged"] is True
     stage_dir = Path(outcome["stage_dir"])
@@ -121,7 +122,14 @@ def test_smoke_training_runs_grad_accumulation_with_partial_group(tmp_path):
     ]
     assert [m["microsteps"] for m in metrics] == [3, 2]
     for m in metrics:
-        assert abs(m["update_loss"] - sum(m["per_example_losses"]) / m["microsteps"]) < 1e-6
+        expected = sum(
+            loss * count
+            for loss, count in zip(
+                m["per_example_losses"],
+                m["per_example_supervised_tokens"],
+            )
+        ) / m["supervised_tokens"]
+        assert abs(m["update_loss"] - expected) < 1e-6
     # LoRA moved, base did not.
     assert fake.trainable_delta_norm(lora_before) > 0.0
     assert fake.base_param_hash() == base_before
@@ -157,7 +165,9 @@ def test_trace_mode_builds_trace_and_worked_example(tmp_path):
         cfg, "trace", model_factory=lambda: fake
     )
 
-    assert outcome["optimizer_steps"] == len(train)
+    assert outcome["optimizer_steps"] == math.ceil(
+        len(train) / cfg.sft.grad_accum_steps
+    )
     stage_dir = Path(outcome["stage_dir"])
     trace = json.loads(
         (stage_dir / "trace.json").read_text(encoding="utf-8")
@@ -170,10 +180,16 @@ def test_trace_mode_builds_trace_and_worked_example(tmp_path):
         assert section in trace, f"missing trace section {section}"
     # Real-model flag is recorded honestly for the fake run.
     assert trace["A_run_identity"]["model"]["real_model"] is False
-    # Per-token NLLs come from the ACTUAL forward; the loss arithmetic
-    # must reproduce the recorded update loss.
+    # Per-token NLLs come from the ACTUAL forward; update loss is one
+    # target-token mean across the whole effective accumulation group.
     for step in trace["H_parameter_update"]["per_step"]:
-        recomputed = sum(step["per_example_losses"]) / step["microsteps"]
+        recomputed = sum(
+            loss * count
+            for loss, count in zip(
+                step["per_example_losses"],
+                step["per_example_supervised_tokens"],
+            )
+        ) / step["supervised_tokens"]
         assert abs(recomputed - step["update_loss"]) < 1e-6
     md_path = Path(outcome["worked_example"])
     assert md_path.is_file()

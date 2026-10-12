@@ -278,21 +278,21 @@ class WorkerSFTModelConfig:
 class WorkerSFTTrainConfig:
     """SFT hyperparameters. All effective values are recorded per run.
 
-    ``scheduler`` is "none" by default: with a single epoch and a fixed
-    learning rate there is no LR schedule, and that fact is written into
-    the run's config snapshot rather than assumed.
+    The production default uses warmup followed by linear decay. Trace
+    mode may override it because a one-update demonstration has no useful
+    schedule.
     """
 
     num_epochs: int = 1
-    learning_rate: float = 1e-5
+    learning_rate: float = 1e-4
     weight_decay: float = 0.0
     adam_betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
     adam_eps: float = 1e-8
     microbatch_size: int = 1
-    grad_accum_steps: int = 8  # the later normal run; trace sets 1
+    grad_accum_steps: int = 16
     max_grad_norm: float = 1.0
-    scheduler: str = "none"  # none | linear
-    warmup_ratio: float = 0.0
+    scheduler: str = "linear"  # none | linear warmup + linear decay
+    warmup_ratio: float = 0.05
     seed: int = 0
     example_order_seed: int = 0
 

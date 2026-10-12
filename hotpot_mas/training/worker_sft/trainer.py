@@ -4,13 +4,14 @@ Teacher forcing only: each microbatch is ONE example whose full
 assistant turn is supervised (never generation-then-alignment). The
 loop per optimizer step is
 
-    zero_grad -> forward -> per-example loss -> backward (scaled by the
-    group size) -> grad clip -> optimizer.step -> scheduler.step
+    zero_grad -> forward -> target-token NLL sum -> backward (scaled by
+    the effective group's target-token count) -> grad clip ->
+    optimizer.step -> scheduler.step
 
-where the group size is the number of examples in this accumulation
-group, computed BEFORE training from the deterministic example order,
-so the final partial group keeps every example's weight exactly (the
-loss never depends on where the group boundary falls).
+where the denominator is computed BEFORE training from the deterministic
+example order. Therefore a group split into microbatches has exactly the
+same loss as one padded effective batch: every target token has equal
+weight, including in the final partial group.
 
 The base model is verified frozen twice: a requires_grad audit at load
 time and a parameter hash before/after training. Only LoRA parameters
@@ -44,8 +45,8 @@ from .masking import (
     WorkerSFTExample,
     assert_supervised_bounds,
     build_worker_sft_example,
-    per_example_loss,
     per_position_nll,
+    supervised_nll_sum_and_count,
     supervised_token_records,
 )
 from .prompting import (
@@ -311,6 +312,16 @@ class WorkerSFTTrainer:
             optimizer.zero_grad()
             group_losses = []
             group_size = size
+            group_token_count = sum(
+                int(
+                    sft_examples[
+                        train_order[(flat_index + offset) % len(train_order)].example_id
+                    ].target_token_ids.numel()
+                )
+                for offset in range(size)
+            )
+            group_nll_sum = 0.0
+            per_example_token_counts: List[int] = []
             for _ in range(size):
                 example = train_order[flat_index % len(train_order)]
                 flat_index += 1
@@ -322,19 +333,28 @@ class WorkerSFTTrainer:
                     input_ids,
                     torch.ones_like(input_ids),
                 )
-                loss = per_example_loss(logits, labels).mean()
-                loss = loss.to(torch.float32)
-                if not torch.isfinite(loss):
+                labels = labels.to(logits.device)
+                nll_sum, token_count = supervised_nll_sum_and_count(
+                    logits, labels
+                )
+                nll_sum = nll_sum.to(torch.float32)
+                if not torch.isfinite(nll_sum):
                     raise FloatingPointError(
                         f"non-finite loss for {example.example_id}"
                     )
-                # Correct gradient-accumulation scaling: each example
-                # contributes loss / group_size, so the accumulated
-                # gradient equals the mean of the group's example
-                # losses (per-example weighting preserved even for the
-                # final partial group).
-                (loss / group_size).backward()
-                group_losses.append(float(loss.detach().cpu()))
+                if token_count != int(sft_example.target_token_ids.numel()):
+                    raise AssertionError(
+                        "shifted supervised-token count disagrees with target "
+                        f"length for {example.example_id}"
+                    )
+                # Normalize once by the effective group's target-token
+                # denominator. Summing these microstep gradients is exactly
+                # equivalent to one padded batch loss of sum(NLL)/sum(tokens).
+                (nll_sum / group_token_count).backward()
+                detached_sum = float(nll_sum.detach().cpu())
+                group_nll_sum += detached_sum
+                per_example_token_counts.append(token_count)
+                group_losses.append(detached_sum / token_count)
                 # Keep the actual forward's per-position NLLs for the
                 # trace (last occurrence wins in multi-epoch runs).
                 if self.mode == "trace":
@@ -355,6 +375,7 @@ class WorkerSFTTrainer:
             snapshot = (
                 model.trainable_snapshot() if self.mode == "trace" else None
             )
+            step_learning_rate = float(optimizer.param_groups[0]["lr"])
             optimizer.step()
             if scheduler is not None:
                 scheduler.step()
@@ -363,7 +384,7 @@ class WorkerSFTTrainer:
                 if snapshot is not None
                 else None
             )
-            update_loss = sum(group_losses) / group_size
+            update_loss = group_nll_sum / group_token_count
             completed_step = step + 1
             checkpoint = None
             if self.mode == "trace":
@@ -375,10 +396,11 @@ class WorkerSFTTrainer:
                     "step": completed_step,
                     "epoch": epoch,
                     "microsteps": group_size,
-                    "learning_rate": float(
-                        optimizer.param_groups[0]["lr"]
-                    ),
+                    "learning_rate": step_learning_rate,
                     "update_loss": update_loss,
+                    "loss_normalization": "target_token_mean",
+                    "supervised_tokens": group_token_count,
+                    "per_example_supervised_tokens": per_example_token_counts,
                     "per_example_losses": list(group_losses),
                     "grad_norm_before_clip": grad_norm_before,
                     "grad_norm_after_clip": grad_norm_after,
@@ -414,10 +436,11 @@ class WorkerSFTTrainer:
                 {
                     "note": (
                         "validation-based model selection is deferred; the "
-                        "trace is a 10-step functional run"
+                        "trace is a one-update functional run"
                     )
                 }
             ]
+        val_summary = self._summarize_eval_records(val_records)
 
         # Checkpoints and outputs.
         final_ckpt = self._save_checkpoint(
@@ -438,9 +461,18 @@ class WorkerSFTTrainer:
         self._write_json(
             self.stage_dir / "length_stats.json", {"examples": length_stats}
         )
+        self._write_json(
+            self.stage_dir / "validation_metrics.json", val_summary
+        )
 
         fixed_outputs = {
             "decode": cfg.decode.to_dict(),
+            "pre_summary": self._summarize_generations(
+                fixed_inputs, pre_outputs
+            ),
+            "post_summary": self._summarize_generations(
+                fixed_inputs, post_outputs
+            ),
             "inputs": [
                 {
                     "kind": item["kind"],
@@ -506,6 +538,7 @@ class WorkerSFTTrainer:
                 if val_records and "correct" in val_records[0]
                 else None
             ),
+            "validation_metrics": val_summary,
         }
 
     # ------------------------------------------------------------------
@@ -519,13 +552,20 @@ class WorkerSFTTrainer:
         if cfg.scheduler == "none":
             return None
         if cfg.scheduler == "linear":
-            warmup = max(1, int(cfg.warmup_ratio * num_steps))
-            return torch.optim.lr_scheduler.LinearLR(
-                optimizer,
-                start_factor=0.0,
-                end_factor=1.0,
-                total_iters=warmup,
-            )
+            if num_steps <= 1:
+                return None
+            warmup = int(cfg.warmup_ratio * num_steps)
+
+            def lr_factor(step: int) -> float:
+                if warmup > 0 and step < warmup:
+                    return float(step + 1) / float(warmup)
+                decay_steps = max(num_steps - warmup, 1)
+                return max(
+                    0.0,
+                    float(num_steps - step) / float(decay_steps),
+                )
+
+            return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_factor)
         raise ValueError(f"unknown scheduler {cfg.scheduler!r}")
 
     @staticmethod
@@ -705,12 +745,97 @@ class WorkerSFTTrainer:
             records.append(
                 {
                     "example_id": example.example_id,
+                    "answerable": example.answerable,
                     "output": generated["text"],
                     "correct": checks["correct"],
                     "checks": checks,
                 }
             )
         return records
+
+    @staticmethod
+    def _summarize_eval_records(
+        records: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Separate semantic abstention errors from format/copy errors."""
+        scored = [record for record in records if "checks" in record]
+        positives = [record for record in scored if record["answerable"]]
+        negatives = [record for record in scored if not record["answerable"]]
+        false_abstentions = sum(
+            record["checks"]["abstained"] for record in positives
+        )
+        false_answers = sum(
+            not record["checks"]["abstained"] for record in negatives
+        )
+        parse_failures = sum(
+            not record["checks"]["parse_ok"] for record in scored
+        )
+        strict_quote_failures = sum(
+            record["checks"]["parse_ok"]
+            and not record["checks"]["abstained"]
+            and not record["checks"]["quotes_verbatim"]
+            for record in scored
+        )
+        return {
+            "examples": len(scored),
+            "answerable_examples": len(positives),
+            "unanswerable_examples": len(negatives),
+            "mean_correct": (
+                sum(record["correct"] for record in scored) / len(scored)
+                if scored else None
+            ),
+            "false_abstentions": false_abstentions,
+            "false_abstention_rate": (
+                false_abstentions / len(positives) if positives else None
+            ),
+            "false_answers": false_answers,
+            "false_answer_rate": (
+                false_answers / len(negatives) if negatives else None
+            ),
+            "parse_failures": parse_failures,
+            "parse_failure_rate": (
+                parse_failures / len(scored) if scored else None
+            ),
+            "strict_quote_failures": strict_quote_failures,
+            "strict_quote_failure_rate": (
+                strict_quote_failures / len(scored) if scored else None
+            ),
+        }
+
+    @staticmethod
+    def _summarize_generations(
+        fixed_inputs: List[Dict[str, Any]],
+        outputs: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Report answerability errors separately from formatting errors."""
+        rows = [
+            (item["example"], output["checks"])
+            for item, output in zip(fixed_inputs, outputs)
+        ]
+        answerable = [(e, c) for e, c in rows if e.answerable]
+        unanswerable = [(e, c) for e, c in rows if not e.answerable]
+        false_abstentions = sum(c["abstained"] for _, c in answerable)
+        false_answers = sum(not c["abstained"] for _, c in unanswerable)
+        parse_failures = sum(not c["parse_ok"] for _, c in rows)
+        return {
+            "examples": len(rows),
+            "answerable_examples": len(answerable),
+            "unanswerable_examples": len(unanswerable),
+            "false_abstentions": false_abstentions,
+            "false_abstention_rate": (
+                false_abstentions / len(answerable) if answerable else None
+            ),
+            "false_answers": false_answers,
+            "false_answer_rate": (
+                false_answers / len(unanswerable) if unanswerable else None
+            ),
+            "parse_failures": parse_failures,
+            "parse_failure_rate": parse_failures / len(rows) if rows else None,
+            "strict_quote_failures": sum(
+                c["parse_ok"] and not c["abstained"] and not c["quotes_verbatim"]
+                for _, c in rows
+            ),
+        }
 
     # ------------------------------------------------------------------
     # Trace assembly

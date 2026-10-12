@@ -21,8 +21,10 @@ Checks (all recorded per example):
   sentence text.
 - ``no_unresolved_refs``: no ``#N`` left in the local question.
 - ``negative_reason_present``: negatives carry a reason.
-- ``basic_answer_absence``: negatives' visible docs do not contain the
-  answer string (basic check only; absence is not proof).
+- ``answer_string_screen``: records whether a known answer/alias occurs
+  in a negative's visible documents. This is a review flag, not a label
+  verdict: string presence may describe the wrong entity/relation, and
+  string absence does not prove unanswerability.
 - ``format_ok``: the rendered target matches the output format.
 - ``documents_present``: at least one visible document.
 """
@@ -196,8 +198,10 @@ def run_automatic_checks(example: WorkerExample) -> Dict[str, Any]:
         }
 
     if example.answerable:
-        results["basic_answer_absence"] = {
+        results["answer_string_screen"] = {
             "ok": True,
+            "flagged": False,
+            "present_in": [],
             "reason": "not applicable (positive)",
         }
     else:
@@ -207,16 +211,18 @@ def run_automatic_checks(example: WorkerExample) -> Dict[str, Any]:
                 doc.text, example.answer, example.answer_aliases
             ):
                 present_in.append(doc.doc_id)
-        ok = not present_in
-        results["basic_answer_absence"] = {
-            "ok": ok,
+        results["answer_string_screen"] = {
+            # Informational only. Semantic answerability must come from an
+            # official label or recorded teacher/human review.
+            "ok": True,
+            "flagged": bool(present_in),
+            "present_in": present_in,
             "reason": (
-                ""
-                if ok
+                "no answer/alias string found (absence is not proof)"
+                if not present_in
                 else (
                     "answer string found in visible document(s) "
-                    f"{present_in} (basic check; absence is not proof, "
-                    "but presence does refute the negative label)"
+                    f"{present_in}; review the entity/relation before use"
                 )
             ),
         }

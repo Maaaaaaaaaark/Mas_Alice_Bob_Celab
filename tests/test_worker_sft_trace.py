@@ -146,12 +146,14 @@ def test_section_g_computes_example_loss_from_recorded_nlls(tmp_path):
         per_example_nll_cache={"e1": nll_row},
         train_examples=[_example()],
         per_step_records=[
-            {
-                "step": 0,
-                "update_loss": 1.5,
-                "microsteps": 2,
-                "per_example_losses": [1.0, 2.0],
-            }
+                {
+                    "step": 0,
+                    "update_loss": 1.5,
+                    "microsteps": 2,
+                    "per_example_losses": [1.0, 2.0],
+                    "per_example_supervised_tokens": [3, 3],
+                    "supervised_tokens": 6,
+                }
         ],
     )
     assert "plain English" in section["teacher_forcing"]
@@ -166,7 +168,7 @@ def test_section_g_computes_example_loss_from_recorded_nlls(tmp_path):
     assert "= 0.300000" in row["arithmetic"]
     # The update loss arithmetic is spelled out from the real records.
     update = section["update_losses"][0]
-    assert "1.000000 + 2.000000 / 2 = 1.500000" in update["arithmetic"]
+    assert "(3.000000 + 6.000000) / 6 tokens = 1.500000" in update["arithmetic"]
 
 
 def test_section_h_lists_checkpoints_and_frozen_base_evidence(tmp_path):

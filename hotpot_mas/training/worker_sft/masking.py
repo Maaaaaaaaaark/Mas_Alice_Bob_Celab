@@ -22,14 +22,13 @@ target token is predicted from the last prompt position and the
 end-of-turn token is predicted from the last content token; the code
 asserts both are trained.
 
-Loss (as documented in ``docs/WORKER_SFT.md``): for one example with
-supervised positions ``P``, ``L = (1/|P|) * sum_{p in P}
--log P(correct token at p | prefix)``. The batch/update loss is the mean
-of the example losses. ``accumulate_worker_sft_losses`` exists so the
-training loop can sum per-example losses across microbatches and divide
-by the number of examples in the group — this keeps every example's
-weight the same for the final partial accumulation group, which plain
-loss averaging would not.
+Loss (as documented in ``docs/WORKER_SFT.md``): all supervised target
+token NLLs in one effective accumulation group are summed, then divided
+once by that group's total number of supervised tokens. Prompt and
+padding tokens never enter either the numerator or denominator. This
+avoids giving a short ``NOT FOUND`` target a larger per-token coefficient
+than a longer quotation merely because it belongs to a shorter example.
+Per-example mean NLL is retained only as a diagnostic.
 """
 
 from __future__ import annotations
@@ -38,6 +37,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 
 IGNORE_INDEX = -100
@@ -175,13 +175,30 @@ def per_position_nll(logits: Tensor, labels: Tensor) -> Tensor:
     batch, time_steps, _ = logits.shape
     if labels.shape != (batch, time_steps):
         raise ValueError(f"labels must be [B, T], got {tuple(labels.shape)}")
-    shift_logits = logits[:, :-1, :].float()
+    shift_logits = logits[:, :-1, :]
     shift_labels = labels[:, 1:]
-    log_probs = torch.log_softmax(shift_logits, dim=-1)
-    safe_labels = shift_labels.clamp(min=0)
-    nll = -log_probs.gather(-1, safe_labels.unsqueeze(-1)).squeeze(-1)
-    mask = shift_labels != IGNORE_INDEX
-    return torch.where(mask, nll, torch.zeros_like(nll))
+    return F.cross_entropy(
+        shift_logits.transpose(1, 2),
+        shift_labels,
+        ignore_index=IGNORE_INDEX,
+        reduction="none",
+    )
+
+
+def supervised_nll_sum_and_count(
+    logits: Tensor, labels: Tensor
+) -> tuple[Tensor, int]:
+    """Return differentiable target-token NLL sum and integer count.
+
+    The count is computed after the causal shift and therefore excludes
+    prompt/padding labels as well as any label at position zero that a
+    causal LM cannot predict.
+    """
+    nll = per_position_nll(logits, labels)
+    count = int((labels[:, 1:] != IGNORE_INDEX).sum().item())
+    if count <= 0:
+        raise ValueError("batch has no supervised target tokens")
+    return nll.sum(), count
 
 
 def per_example_loss(logits: Tensor, labels: Tensor) -> Tensor:
@@ -192,34 +209,15 @@ def per_example_loss(logits: Tensor, labels: Tensor) -> Tensor:
 
 
 def accumulate_worker_sft_losses(
-    losses: List[Tensor], counts: List[int]
+    nll_sums: List[Tensor], token_counts: List[int]
 ) -> Tensor:
-    """Weighted update loss from per-example losses.
-
-    ``losses`` holds one per-example loss per microbatch;
-    ``counts[i]`` is the number of examples the i-th entry represents.
-    The update loss is ``sum(losses[i] * counts[i]) / sum(counts)``, so
-    every example contributes its own per-example loss with equal weight
-    regardless of how the accumulation group is split — the final
-    partial group keeps the same per-example weighting.
-    """
-    if len(counts) == 1 and counts[0] == len(losses):
-        # Individual per-example losses plus the size of their group.
-        return torch.stack(losses).mean()
-    if len(losses) != len(counts):
-        raise ValueError(
-            "losses and counts must have equal lengths unless counts "
-            "contains the single total number of per-example losses"
-        )
-    total = sum(int(c) for c in counts)
-    if total <= 0:
-        raise ValueError("no examples accumulated")
-    weighted = sum(
-        loss * count
-        for loss, count in zip(losses, counts)
-        if count > 0
-    )
-    return weighted / total
+    """Mean NLL over all supervised tokens in an accumulation group."""
+    if len(nll_sums) != len(token_counts):
+        raise ValueError("nll_sums and token_counts must have equal lengths")
+    total_tokens = sum(int(count) for count in token_counts)
+    if total_tokens <= 0 or not nll_sums:
+        raise ValueError("no supervised tokens accumulated")
+    return torch.stack(nll_sums).sum() / total_tokens
 
 
 def supervised_token_records(

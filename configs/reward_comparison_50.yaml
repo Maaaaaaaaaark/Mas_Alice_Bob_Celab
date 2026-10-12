@@ -1,5 +1,5 @@
 experiment_id: reward_comparison
-experiment_version: train50_g4
+experiment_version: train50_g4_c4b
 seed: 0
 output_dir: outputs/diagnostics
 manifest_dir: outputs/training_manifests/reward_comparison_50
@@ -14,8 +14,17 @@ data:
   partition_seed: 0
   val_test_split_seed: 0
 
-model:
+worker_model:
   name: google/gemma-3-1b-it
+  revision: null
+  dtype: bfloat16
+  device: cuda
+  attn_implementation: null
+  max_input_length: 30000
+  peft: {r: 16, alpha: 32, dropout: 0.0, target_modules: null}
+
+synthesizer_model:
+  name: google/gemma-3-4b-it
   revision: null
   dtype: bfloat16
   device: cuda

@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Tuple
 import pytest
 import torch
 
-from hotpot_mas.training.config import DecodeConfig
+from hotpot_mas.training.config import DecodeConfig, ModelConfig
 from hotpot_mas.training.eval import QuestionEval, SplitEvalResult
 from hotpot_mas.training.fake_policy import (
     FakePolicy,
@@ -152,6 +152,33 @@ class TestResolveWorkerCheckpoint:
         cfg = make_synthesizer_training_config(tmp_path, run_dir)
         ckpt = resolve_worker_checkpoint(run_dir)
         compat = check_worker_adapter_compatibility(ckpt, cfg)
+        assert compat is not None and compat["checked"] is True
+
+    def test_worker_adapter_check_does_not_compare_against_4b_c(
+        self, tmp_path
+    ) -> None:
+        run_dir, _ = make_fake_worker_run(tmp_path, {1: 0.5, 2: 0.9})
+        adapter_dir = run_dir / "step_00002" / "adapter"
+        (adapter_dir / "adapter_config.json").write_text(
+            json.dumps(
+                {
+                    "base_model_name_or_path": "fake/base-model",
+                    "r": 16,
+                    "lora_alpha": 32,
+                }
+            ),
+            encoding="utf-8",
+        )
+        cfg = make_synthesizer_training_config(tmp_path, run_dir)
+        cfg.synthesizer_model = ModelConfig(
+            name="google/gemma-3-4b-it",
+            device="cpu",
+            dtype="float32",
+        )
+        ckpt = resolve_worker_checkpoint(run_dir)
+
+        compat = check_worker_adapter_compatibility(ckpt, cfg)
+
         assert compat is not None and compat["checked"] is True
 
     def test_missing_adapter_config_skips_check(self, tmp_path) -> None:

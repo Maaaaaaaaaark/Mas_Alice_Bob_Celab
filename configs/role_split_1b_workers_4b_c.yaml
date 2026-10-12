@@ -1,0 +1,63 @@
+# Role-split inference: A/B share Gemma-3-1B; coordinator C uses Gemma-3-4B.
+# This is a new experiment identity. Historical base.yaml remains unchanged.
+
+experiment_id: hotpotqa_role_split_mas
+experiment_version: v1_1b_workers_4b_c
+
+dataset: hotpot_qa
+dataset_config: distractor
+dataset_split: validation
+
+num_questions: 100
+runs_per_question: 10
+run_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+sample_selection_seed: 0
+
+# A/B model.
+model_name: google/gemma-3-1b-it
+model_revision: dcc83ea841ab6100d6b47a070329e1ba4cf78752
+tokenizer_revision: dcc83ea841ab6100d6b47a070329e1ba4cf78752
+
+# C model. Pin both revisions before a production run.
+coordinator_model_name: google/gemma-3-4b-it
+coordinator_model_revision: null
+coordinator_tokenizer_revision: null
+
+engine: transformers
+dtype: float16
+device: cuda
+model_instance_mode: shared  # A/B share one 1B engine; C gets one 4B engine
+agent_devices: {}
+attn_implementation: null
+max_input_length: 30000
+
+generation:
+  do_sample: true
+  temperature: 0.6
+  top_p: 0.95
+  max_new_tokens: 2048
+
+max_decision_steps: 20
+architecture: mas
+share_question_with_workers: false
+worker_clarification:
+  enabled: false
+  max_per_worker: 1
+
+prompt_dir: prompts
+manifest_path: outputs/question_manifest.json
+output_dir: outputs
+
+modes:
+  smoke:
+    num_questions: 1
+    runs_per_question: 1
+    run_seeds: [0]
+  small:
+    num_questions: 5
+    runs_per_question: 2
+    run_seeds: [0, 1]
+  full:
+    num_questions: 100
+    runs_per_question: 10
+    run_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]

@@ -1,7 +1,7 @@
 # Inference-only diagnostic: no checkpoint is loaded and no parameters update.
 # The validation split contains the same 300 questions in all four conditions.
 experiment_id: inference_diagnostic
-experiment_version: val300
+experiment_version: val300_c4b
 seed: 0
 output_dir: outputs/diagnostics
 manifest_dir: outputs/training_manifests/inference_diagnostic_300
@@ -25,7 +25,7 @@ data:
   partition_seed: 0
   val_test_split_seed: 0
 
-model:
+worker_model:
   name: google/gemma-3-1b-it
   revision: null
   dtype: float16
@@ -37,6 +37,15 @@ model:
     alpha: 32
     dropout: 0.0
     target_modules: null
+
+synthesizer_model:
+  name: google/gemma-3-4b-it
+  revision: null
+  dtype: float16
+  device: cuda
+  attn_implementation: null
+  max_input_length: 30000
+  peft: {r: 16, alpha: 32, dropout: 0.0, target_modules: null}
 
 # Training-only fields remain valid because this file reuses TrainingConfig.
 # diagnose-inference reads only eval_decode and synthesizer_decode below.

@@ -1,4 +1,5 @@
-# Stage 1 G=6 pilot: frozen C, shared trainable worker LoRA.
+# LEGACY G=6 pilot: frozen C, shared trainable worker LoRA.
+# Current Stage 1a is configs/worker_sft.yaml and does not use C.
 # The untrained workers are evaluated at step 0 on the same validation set.
 
 experiment_id: cross_paired_grpo_workers

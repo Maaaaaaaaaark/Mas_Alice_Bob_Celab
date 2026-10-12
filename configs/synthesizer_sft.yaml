@@ -2,7 +2,7 @@
 # (cross_paired_grpo.tex, Algorithm 2). The workers A/B are frozen at
 # the Stage 1 best checkpoint (selected on validation F1, never the
 # latest step) and keep sharing one LoRA; C gets its own independent
-# LoRA phi on the same base model, supervised only on the gold-answer
+# LoRA phi on Gemma-3-4B, supervised only on the gold-answer
 # tokens of D_C (Eq. 4).
 #
 # worker_checkpoint points at the Stage 1 run directory; the best step
@@ -18,7 +18,7 @@
 # its own data counts, epochs, and worker-checkpoint identity.
 
 experiment_id: synthesizer_sft
-experiment_version: smoke
+experiment_version: smoke_c4b
 seed: 0
 output_dir: outputs/training
 manifest_dir: outputs/training_manifests/smoke   # reuses Stage 1 smoke manifests
@@ -43,8 +43,21 @@ data:
   partition_seed: 0              # must match the Stage 1 smoke manifests
   val_test_split_seed: 0
 
-model:
+worker_model:
   name: google/gemma-3-1b-it
+  revision: null
+  dtype: float16
+  device: cuda
+  attn_implementation: null
+  max_input_length: 30000
+  peft:                          # must match the frozen Stage 1 worker adapter
+    r: 16
+    alpha: 32
+    dropout: 0.0
+    target_modules: null         # null -> peft "all-linear"
+
+synthesizer_model:
+  name: google/gemma-3-4b-it
   revision: null
   dtype: float16
   device: cuda
@@ -54,7 +67,7 @@ model:
     r: 16
     alpha: 32
     dropout: 0.0
-    target_modules: null         # null -> peft "all-linear"
+    target_modules: null
 
 sft:
   num_epochs: 2                  # 2-3 per the experiment plan
@@ -74,7 +87,7 @@ sft:
 
 modes:
   trace:
-    experiment_version: trace
+    experiment_version: trace_c4b
     manifest_dir: outputs/training_manifests/trace   # Stage 1 trace manifests
     # Stage 1 trace runs skip validation and therefore record no best
     # checkpoint; the trace resolves the frozen workers from the Stage 1
@@ -97,6 +110,6 @@ modes:
       num_epochs: 1
       batch_size: 1
   smoke:
-    experiment_version: smoke
+    experiment_version: smoke_c4b
     manifest_dir: outputs/training_manifests/smoke
     worker_checkpoint: outputs/training/cross_paired_grpo_workers/smoke

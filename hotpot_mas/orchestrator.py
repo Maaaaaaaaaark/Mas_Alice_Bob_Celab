@@ -77,7 +77,12 @@ class Orchestrator:
         primary = dict(by_agent.get("celab", next(iter(by_agent.values()))))
         primary.update(
             {
-                "model_instance_mode": "independent",
+                "model_instance_mode": (
+                    "independent"
+                    if len({id(x) for x in self.engine.values()})
+                    == len(self.engine)
+                    else "role_split"
+                ),
                 "physical_model_instances": len(
                     {id(engine) for engine in self.engine.values()}
                 ),
@@ -183,8 +188,17 @@ class Orchestrator:
             "prompt_version": self.prompts.version,
             "prompt_hashes": dict(self.prompts.hashes),
             "model_name": self.cfg.model_name,
-            "model_revision": engine_info.get("model_revision"),
-            "tokenizer_revision": engine_info.get("tokenizer_revision"),
+            "model_revision": self.cfg.model_revision,
+            "tokenizer_revision": self.cfg.tokenizer_revision,
+            "coordinator_model_name": (
+                self.cfg.resolved_coordinator_model_name
+            ),
+            "coordinator_model_revision": (
+                self.cfg.resolved_coordinator_model_revision
+            ),
+            "coordinator_tokenizer_revision": (
+                self.cfg.resolved_coordinator_tokenizer_revision
+            ),
             "generation_config": {
                 **self.cfg.generation.to_dict(),
                 "max_decision_steps": self.cfg.max_decision_steps,

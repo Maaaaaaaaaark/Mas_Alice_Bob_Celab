@@ -20,6 +20,8 @@ _KNOWN_KEYS = {
     "experiment_id", "experiment_version", "dataset", "dataset_config",
     "dataset_split", "num_questions", "runs_per_question", "run_seeds",
     "sample_selection_seed", "model_name", "model_revision",
+    "coordinator_model_name", "coordinator_model_revision",
+    "coordinator_tokenizer_revision",
     "tokenizer_revision", "dtype", "device", "attn_implementation",
     "engine", "vllm_gpu_memory_utilization", "vllm_enforce_eager",
     "max_input_length", "generation", "max_decision_steps", "prompt_dir",
@@ -98,6 +100,9 @@ class ExperimentConfig:
     model_name: str = "google/gemma-3-1b-it"
     model_revision: Optional[str] = None
     tokenizer_revision: Optional[str] = None
+    coordinator_model_name: Optional[str] = None
+    coordinator_model_revision: Optional[str] = None
+    coordinator_tokenizer_revision: Optional[str] = None
     engine: str = "transformers"
     dtype: str = "float16"
     device: str = "cuda"
@@ -160,6 +165,13 @@ class ExperimentConfig:
             model_name=raw.get("model_name", "google/gemma-3-1b-it"),
             model_revision=raw.get("model_revision"),
             tokenizer_revision=raw.get("tokenizer_revision"),
+            coordinator_model_name=raw.get("coordinator_model_name"),
+            coordinator_model_revision=raw.get(
+                "coordinator_model_revision"
+            ),
+            coordinator_tokenizer_revision=raw.get(
+                "coordinator_tokenizer_revision"
+            ),
             engine=raw.get("engine", "transformers"),
             dtype=raw.get("dtype", "float16"),
             device=raw.get("device", "cuda"),
@@ -212,6 +224,14 @@ class ExperimentConfig:
             )
         if self.engine not in {"transformers", "vllm"}:
             raise ValueError("engine must be one of: transformers, vllm")
+        if (
+            self.resolved_coordinator_model_name != self.model_name
+            and self.engine != "transformers"
+        ):
+            raise ValueError(
+                "different worker/coordinator models currently require "
+                "the transformers engine"
+            )
         if self.evidence_partition not in {
             "supporting_only",
             "balanced_distractor",
@@ -343,6 +363,22 @@ class ExperimentConfig:
         """Directory that holds runs.jsonl and the summaries."""
         return self.output_dir / self.experiment_id / self.experiment_version
 
+    @property
+    def resolved_coordinator_model_name(self) -> str:
+        return self.coordinator_model_name or self.model_name
+
+    @property
+    def resolved_coordinator_model_revision(self) -> Optional[str]:
+        if self.coordinator_model_name:
+            return self.coordinator_model_revision
+        return self.model_revision
+
+    @property
+    def resolved_coordinator_tokenizer_revision(self) -> Optional[str]:
+        if self.coordinator_model_name:
+            return self.coordinator_tokenizer_revision
+        return self.tokenizer_revision
+
     def to_dict(self) -> Dict[str, Any]:
         """JSON-serializable resolved config, persisted with every run record."""
         return {
@@ -360,6 +396,13 @@ class ExperimentConfig:
             "model_name": self.model_name,
             "model_revision": self.model_revision,
             "tokenizer_revision": self.tokenizer_revision,
+            "coordinator_model_name": self.resolved_coordinator_model_name,
+            "coordinator_model_revision": (
+                self.resolved_coordinator_model_revision
+            ),
+            "coordinator_tokenizer_revision": (
+                self.resolved_coordinator_tokenizer_revision
+            ),
             "engine": self.engine,
             "dtype": self.dtype,
             "device": self.device,

@@ -1,4 +1,5 @@
-# Stage 1: cross-paired GRPO training of the shared worker LoRA
+# LEGACY experiment: cross-paired GRPO training of the shared worker LoRA.
+# Current Stage 1a is configs/worker_sft.yaml and does not use C.
 # (cross_paired_grpo.tex, Algorithm 1). Frozen C = base model, greedy
 # decoding, deterministic reward (official HotpotQA token F1).
 #

@@ -210,8 +210,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m hotpot_mas.training.cli",
         description=(
-            "Hotpot multi-agent training and diagnostics (GRPO workers, "
-            "synthesizer SFT, and independent worker SFT)."
+            "Hotpot multi-agent training and diagnostics (legacy GRPO, "
+            "synthesizer SFT, and current independent worker SFT)."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -232,7 +232,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     train = sub.add_parser(
-        "train-workers", help="Stage 1: train the shared worker LoRA"
+        "train-workers",
+        help="legacy cross-paired GRPO worker training (uses frozen C)",
     )
     train.add_argument("--config", required=True)
     train.add_argument(

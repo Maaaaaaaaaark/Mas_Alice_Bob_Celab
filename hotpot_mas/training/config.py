@@ -1,4 +1,7 @@
-"""Training experiment configuration (Stage 1 workers + Stage 2 synthesizer).
+"""Legacy GRPO/synthesizer experiment configuration.
+
+The current coordinator-free Stage 1a worker SFT has its own configuration
+module under ``hotpot_mas.training.worker_sft``.
 
 Deliberately separate from the inference ``ExperimentConfig``
 (``hotpot_mas/config.py``): training runs have their own hyperparameters,
@@ -191,6 +194,22 @@ class ModelConfig:
         }
 
 
+def _validate_model_config(model: ModelConfig, name: str) -> None:
+    """Validate one independently configured model role."""
+    if model.dtype not in {"float16", "bfloat16", "float32"}:
+        raise ValueError(
+            f"{name}.dtype must be one of: float16, bfloat16, float32"
+        )
+    if not model.device:
+        raise ValueError(f"{name}.device must be a non-empty string")
+    if model.max_input_length < 1:
+        raise ValueError(f"{name}.max_input_length must be >= 1")
+    if model.peft.r < 1 or model.peft.alpha < 1:
+        raise ValueError(
+            f"{name}.peft.r and {name}.peft.alpha must be >= 1"
+        )
+
+
 @dataclass
 class DecodeConfig:
     """Decoding parameters for one sampling mode."""
@@ -332,7 +351,15 @@ class WorkerTrainingConfig:
 
 @dataclass
 class TrainingConfig:
-    """Stage 1 worker training configuration."""
+    """Legacy cross-paired GRPO worker-training configuration.
+
+    The current coordinator-free Stage 1a uses ``worker_sft.config`` instead.
+    ``model`` is retained as the in-memory legacy name for the worker
+    model so older test/config construction remains valid. New YAML files
+    use the unambiguous ``worker_model`` and ``synthesizer_model`` keys.
+    When the latter is omitted, it falls back to the worker model for
+    compatibility with old single-model experiments.
+    """
 
     experiment_id: str = "cross_paired_grpo_workers"
     experiment_version: str = "v1"
@@ -348,6 +375,7 @@ class TrainingConfig:
     )
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
+    synthesizer_model: Optional[ModelConfig] = None
     workers: WorkerTrainingConfig = field(default_factory=WorkerTrainingConfig)
     modes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
@@ -366,6 +394,10 @@ class TrainingConfig:
 
     @classmethod
     def _from_raw(cls, raw: Dict[str, Any]) -> "TrainingConfig":
+        worker_raw = raw.get("worker_model", raw.get("model"))
+        if worker_raw is None:
+            raise ValueError("worker_model is required")
+        synthesizer_raw = raw.get("synthesizer_model", worker_raw)
         return cls(
             experiment_id=str(raw["experiment_id"]),
             experiment_version=str(raw["experiment_version"]),
@@ -376,13 +408,22 @@ class TrainingConfig:
             ),
             prompt_dir=_resolve_path(raw.get("prompt_dir", "prompts_training")),
             data=DataConfig.from_dict(raw["data"]),
-            model=ModelConfig.from_dict(raw["model"]),
+            model=ModelConfig.from_dict(worker_raw),
+            synthesizer_model=ModelConfig.from_dict(synthesizer_raw),
             workers=WorkerTrainingConfig.from_dict(raw.get("workers", {})),
             modes={
                 str(name): copy.deepcopy(mode_raw)
                 for name, mode_raw in (raw.get("modes") or {}).items()
             },
         )
+
+    @property
+    def worker_model(self) -> ModelConfig:
+        return self.model
+
+    @property
+    def c_model(self) -> ModelConfig:
+        return self.synthesizer_model or self.model
 
     @staticmethod
     def apply_mode(raw: Dict[str, Any], mode: str) -> Dict[str, Any]:
@@ -468,16 +509,8 @@ class TrainingConfig:
             self.data.val_test_split_seed, "data.val_test_split_seed"
         )
         _check_seed_range(self.seed, "seed")
-        if self.model.dtype not in {"float16", "bfloat16", "float32"}:
-            raise ValueError(
-                "model.dtype must be one of: float16, bfloat16, float32"
-            )
-        if not self.model.device:
-            raise ValueError("model.device must be a non-empty string")
-        if self.model.max_input_length < 1:
-            raise ValueError("model.max_input_length must be >= 1")
-        if self.model.peft.r < 1 or self.model.peft.alpha < 1:
-            raise ValueError("model.peft.r and model.peft.alpha must be >= 1")
+        _validate_model_config(self.worker_model, "worker_model")
+        _validate_model_config(self.c_model, "synthesizer_model")
         if not self.prompt_dir.is_dir():
             raise ValueError(f"prompt_dir does not exist: {self.prompt_dir}")
 
@@ -494,7 +527,8 @@ class TrainingConfig:
             "manifest_dir": str(self.manifest_dir),
             "prompt_dir": str(self.prompt_dir),
             "data": self.data.to_dict(),
-            "model": self.model.to_dict(),
+            "worker_model": self.worker_model.to_dict(),
+            "synthesizer_model": self.c_model.to_dict(),
             "workers": self.workers.to_dict(),
         }
 
@@ -571,8 +605,9 @@ class SynthesizerTrainingConfig:
     ``worker_checkpoint`` points at the Stage 1 run directory (the best
     step is then resolved from the recorded validation F1, never the last
     step) or directly at a best adapter directory
-    (``.../step_XXXXX/adapter``); the synthesizer gets its own LoRA ``phi``
-    on the same base model.
+    (``.../step_XXXXX/adapter``). ``worker_model`` describes the frozen
+    Stage 1 base model and ``synthesizer_model`` describes C, which may be
+    a different (for example larger) base model with its own LoRA ``phi``.
     """
 
     experiment_id: str = "synthesizer_sft"
@@ -589,6 +624,7 @@ class SynthesizerTrainingConfig:
     )
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
+    synthesizer_model: Optional[ModelConfig] = None
     sft: SFTConfig = field(default_factory=SFTConfig)
     worker_checkpoint: Optional[str] = None  # Stage 1 run dir or adapter dir
     modes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
@@ -604,6 +640,10 @@ class SynthesizerTrainingConfig:
             raw = yaml.safe_load(f) or {}
         if mode is not None:
             raw = TrainingConfig.apply_mode(raw, mode)
+        worker_raw = raw.get("worker_model", raw.get("model"))
+        if worker_raw is None:
+            raise ValueError("worker_model is required")
+        synthesizer_raw = raw.get("synthesizer_model", worker_raw)
         cfg = cls(
             experiment_id=str(raw["experiment_id"]),
             experiment_version=str(raw["experiment_version"]),
@@ -614,7 +654,8 @@ class SynthesizerTrainingConfig:
             ),
             prompt_dir=_resolve_path(raw.get("prompt_dir", "prompts_training")),
             data=DataConfig.from_dict(raw["data"]),
-            model=ModelConfig.from_dict(raw["model"]),
+            model=ModelConfig.from_dict(worker_raw),
+            synthesizer_model=ModelConfig.from_dict(synthesizer_raw),
             sft=SFTConfig.from_dict(raw.get("sft", {})),
             worker_checkpoint=(
                 str(raw["worker_checkpoint"])
@@ -628,6 +669,14 @@ class SynthesizerTrainingConfig:
         )
         cfg.validate()
         return cfg
+
+    @property
+    def worker_model(self) -> ModelConfig:
+        return self.model
+
+    @property
+    def c_model(self) -> ModelConfig:
+        return self.synthesizer_model or self.model
 
     def validate(self) -> None:
         if self.sft.num_epochs < 1:
@@ -651,16 +700,8 @@ class SynthesizerTrainingConfig:
                 raise ValueError(
                     f"sft.{name}.max_new_tokens must be >= 1"
                 )
-        if self.model.dtype not in {"float16", "bfloat16", "float32"}:
-            raise ValueError(
-                "model.dtype must be one of: float16, bfloat16, float32"
-            )
-        if not self.model.device:
-            raise ValueError("model.device must be a non-empty string")
-        if self.model.max_input_length < 1:
-            raise ValueError("model.max_input_length must be >= 1")
-        if self.model.peft.r < 1 or self.model.peft.alpha < 1:
-            raise ValueError("model.peft.r and model.peft.alpha must be >= 1")
+        _validate_model_config(self.worker_model, "worker_model")
+        _validate_model_config(self.c_model, "synthesizer_model")
         _check_seed_range(self.seed, "seed")
         for side in (self.data.train, self.data.val, self.data.test):
             if side.num_questions < 1:
@@ -699,7 +740,8 @@ class SynthesizerTrainingConfig:
             "manifest_dir": str(self.manifest_dir),
             "prompt_dir": str(self.prompt_dir),
             "data": self.data.to_dict(),
-            "model": self.model.to_dict(),
+            "worker_model": self.worker_model.to_dict(),
+            "synthesizer_model": self.c_model.to_dict(),
             "sft": self.sft.to_dict(),
             "worker_checkpoint": self.worker_checkpoint,
         }

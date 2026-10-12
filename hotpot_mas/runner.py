@@ -56,6 +56,7 @@ def run_fingerprint(
         "run_index": run_index,
         "run_seed": run_seed,
         "model_name": cfg.model_name,
+        "coordinator_model_name": cfg.resolved_coordinator_model_name,
         "engine_info": engine_info,
         "runtime_environment": {
             key: environment_info.get(key)
@@ -83,39 +84,80 @@ def run_fingerprint(
 
 
 def build_engine(
-    cfg: ExperimentConfig, device: str | None = None
+    cfg: ExperimentConfig,
+    device: str | None = None,
+    *,
+    model_name: str | None = None,
+    model_revision: str | None = None,
+    tokenizer_revision: str | None = None,
 ) -> ModelEngine:
     """Construct one frozen model engine."""
+    resolved_name = model_name or cfg.model_name
+    resolved_model_revision = (
+        cfg.model_revision if model_name is None else model_revision
+    )
+    resolved_tokenizer_revision = (
+        cfg.tokenizer_revision if model_name is None else tokenizer_revision
+    )
     if cfg.engine == "vllm":
         return VLLMEngine(
-            model_name=cfg.model_name,
+            model_name=resolved_name,
             generation_params=cfg.generation,
             dtype=cfg.dtype,
-            model_revision=cfg.model_revision,
-            tokenizer_revision=cfg.tokenizer_revision,
+            model_revision=resolved_model_revision,
+            tokenizer_revision=resolved_tokenizer_revision,
             max_input_length=cfg.max_input_length,
             gpu_memory_utilization=cfg.vllm_gpu_memory_utilization,
             enforce_eager=cfg.vllm_enforce_eager,
         )
     return HFEngine(
-        model_name=cfg.model_name,
+        model_name=resolved_name,
         generation_params=cfg.generation,
         dtype=cfg.dtype,
         device=device or cfg.device,
         attn_implementation=cfg.attn_implementation,
-        model_revision=cfg.model_revision,
-        tokenizer_revision=cfg.tokenizer_revision,
+        model_revision=resolved_model_revision,
+        tokenizer_revision=resolved_tokenizer_revision,
         max_input_length=cfg.max_input_length,
     )
 
 
 def build_engines(cfg: ExperimentConfig) -> ModelEngine | Dict[str, ModelEngine]:
-    """Build one shared engine or three physically independent model copies."""
-    if cfg.model_instance_mode == "shared":
+    """Build shared, role-split, or physically independent engines."""
+    coordinator_name = cfg.resolved_coordinator_model_name
+    if (
+        cfg.model_instance_mode == "shared"
+        and coordinator_name == cfg.model_name
+    ):
         return build_engine(cfg)
+    if cfg.model_instance_mode == "shared":
+        worker_engine = build_engine(cfg)
+        coordinator_engine = build_engine(
+            cfg,
+            model_name=coordinator_name,
+            model_revision=cfg.resolved_coordinator_model_revision,
+            tokenizer_revision=cfg.resolved_coordinator_tokenizer_revision,
+        )
+        return {
+            "alice": worker_engine,
+            "bob": worker_engine,
+            "celab": coordinator_engine,
+        }
+    if coordinator_name == cfg.model_name:
+        return {
+            name: build_engine(cfg, device=cfg.agent_devices[name])
+            for name in ("alice", "bob", "celab")
+        }
     return {
-        name: build_engine(cfg, device=cfg.agent_devices[name])
-        for name in ("alice", "bob", "celab")
+        "alice": build_engine(cfg, device=cfg.agent_devices["alice"]),
+        "bob": build_engine(cfg, device=cfg.agent_devices["bob"]),
+        "celab": build_engine(
+            cfg,
+            device=cfg.agent_devices["celab"],
+            model_name=coordinator_name,
+            model_revision=cfg.resolved_coordinator_model_revision,
+            tokenizer_revision=cfg.resolved_coordinator_tokenizer_revision,
+        ),
     }
 
 
@@ -134,7 +176,11 @@ def engine_metadata(
     info = dict(by_agent.get("celab", next(iter(by_agent.values()))))
     info.update(
         {
-            "model_instance_mode": "independent",
+            "model_instance_mode": (
+                "independent"
+                if len({id(x) for x in engine.values()}) == len(engine)
+                else "role_split"
+            ),
             "physical_model_instances": len(
                 {id(agent_engine) for agent_engine in engine.values()}
             ),
@@ -169,7 +215,8 @@ def run_experiment(
     tqdm.write("model engine(s) ready:")
     if isinstance(engine, dict):
         tqdm.write(
-            "  topology: three independent physical model instances"
+            f"  topology: {engine_info['model_instance_mode']} "
+            f"({engine_info['physical_model_instances']} physical models)"
         )
         for name, info in engine_info["by_agent"].items():
             tqdm.write(

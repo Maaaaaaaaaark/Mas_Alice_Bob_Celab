@@ -1,5 +1,8 @@
-"""Stage 1: cross-paired GRPO training of the shared worker LoRA
+"""Legacy cross-paired GRPO training of the shared worker LoRA
 (Algorithm 1 of ``cross_paired_grpo.tex``).
+
+This is not the current Stage 1a pipeline. Current Stage 1a lives under
+``training/worker_sft`` and trains A/B independently of any coordinator C.
 
 Loop outline per update:
 
@@ -17,9 +20,9 @@ Loop outline per update:
    validation F1; write one ``metrics.jsonl`` line per update.
 
 The workers A and B share **one** ``Policy`` instance (one base model, one
-LoRA adapter); they differ only in role prompt and private evidence. The
-synthesizer C is a separate frozen base-model instance with no trainable
-parameters and is called exactly ``G * G`` times per question.
+LoRA adapter); they differ only in role prompt and private evidence. In this
+preserved legacy experiment only, synthesizer C is a separate frozen base
+model instance and is called exactly ``G * G`` times per question.
 """
 
 from __future__ import annotations
@@ -166,12 +169,14 @@ class WorkerTrainer:
         seed_all(cfg.seed)
         self.prompts = TrainingPrompts(cfg.prompt_dir)
         self.policy = (
-            policy_factory() if policy_factory else HFPolicy(cfg.model)
+            policy_factory() if policy_factory else HFPolicy(cfg.worker_model)
         )
         self.synthesizer = (
             synthesizer_factory()
             if synthesizer_factory
-            else HFSynthesizer(cfg.model, cfg.workers.synthesizer_decode)
+            else HFSynthesizer(
+                cfg.c_model, cfg.workers.synthesizer_decode
+            )
         )
         params = self.policy.trainable_parameters()
         if not params:

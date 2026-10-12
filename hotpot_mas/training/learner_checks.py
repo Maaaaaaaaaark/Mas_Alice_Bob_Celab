@@ -30,7 +30,7 @@ def check_logprob_consistency(
         raise RuntimeError("training manifest contains no questions")
     question = questions[0]
     seed_all(cfg.seed)
-    policy = HFPolicy(cfg.model)
+    policy = HFPolicy(cfg.worker_model)
     prompts = TrainingPrompts(cfg.prompt_dir)
     side_results: List[Dict[str, Any]] = []
     all_diffs: List[torch.Tensor] = []
@@ -76,7 +76,7 @@ def check_logprob_consistency(
     passed = mean_diff <= mean_tolerance and max_diff <= max_tolerance
     result = {
         "question_id": question.question_id,
-        "model": cfg.model.to_dict(),
+        "worker_model": cfg.worker_model.to_dict(),
         "decode": cfg.workers.rollout.to_dict(),
         "mean_tolerance": mean_tolerance,
         "max_tolerance": max_tolerance,

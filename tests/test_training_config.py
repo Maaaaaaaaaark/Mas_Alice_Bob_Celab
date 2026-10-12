@@ -67,6 +67,28 @@ class TestTrainingConfig:
         assert cfg.model.dtype == "float16"
         assert cfg.prompt_dir.is_dir()
 
+    def test_explicit_worker_and_coordinator_models_are_separate(
+        self, tmp_path: Path
+    ):
+        raw = base_yaml()
+        raw["prompt_dir"] = str(REPO_ROOT / "prompts_training")
+        raw["worker_model"] = raw.pop("model")
+        raw["synthesizer_model"] = {
+            **raw["worker_model"],
+            "name": "google/gemma-3-4b-it",
+        }
+        path = tmp_path / "split_models.yaml"
+        path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+        cfg = TrainingConfig.from_yaml(path)
+
+        assert cfg.worker_model.name == "google/gemma-3-1b-it"
+        assert cfg.c_model.name == "google/gemma-3-4b-it"
+        assert cfg.to_dict()["worker_model"]["name"].endswith("1b-it")
+        assert cfg.to_dict()["synthesizer_model"]["name"].endswith(
+            "4b-it"
+        )
+
     def test_validation_rejects_bad_values(self, tmp_path: Path):
         for key, value in [
             ("G", 1),

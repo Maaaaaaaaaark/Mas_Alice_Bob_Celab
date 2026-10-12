@@ -214,7 +214,7 @@ class RewardComparison:
         if not missing:
             return cache, skipped
         seed_all(self.cfg.seed)
-        policy = HFPolicy(self.cfg.model)
+        policy = HFPolicy(self.cfg.worker_model)
         g = self.cfg.workers.G
         max_attempts = self.cfg.workers.max_sampling_attempts
         for q_index, question in enumerate(missing, 1):
@@ -310,7 +310,7 @@ class RewardComparison:
         existing = _load_jsonl(self.results_path)
         seed_all(self.cfg.seed)
         synthesizer = HFSynthesizer(
-            self.cfg.model, self.cfg.workers.synthesizer_decode
+            self.cfg.c_model, self.cfg.workers.synthesizer_decode
         )
         g = self.cfg.workers.G
         for q_index, question in enumerate(valid_questions, 1):

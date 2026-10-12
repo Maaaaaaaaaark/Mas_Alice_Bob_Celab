@@ -404,7 +404,7 @@ class InferenceDiagnostic:
             return
         logger.info("generating %d missing untrained-worker report pairs", len(missing))
         seed_all(self.cfg.seed)
-        policy = HFPolicy(self.cfg.model)
+        policy = HFPolicy(self.cfg.worker_model)
         for index, question in enumerate(missing, 1):
             reports: Dict[str, Any] = {}
             for side, evidence in (
@@ -486,7 +486,7 @@ class InferenceDiagnostic:
         existing = _load_jsonl(self.results_path)
         seed_all(self.cfg.seed)
         synthesizer = HFSynthesizer(
-            self.cfg.model, self.cfg.workers.synthesizer_decode
+            self.cfg.c_model, self.cfg.workers.synthesizer_decode
         )
         total = len(questions) * len(CONDITIONS)
         completed = len(existing)

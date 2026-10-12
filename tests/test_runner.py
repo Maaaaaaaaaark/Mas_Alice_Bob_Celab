@@ -70,3 +70,37 @@ def test_build_engines_constructs_three_distinct_instances_on_one_device(
     assert list(engines) == ["alice", "bob", "celab"]
     assert [device for device, _ in created] == ["cuda:0", "cuda:0", "cuda:0"]
     assert len({id(engine) for engine in engines.values()}) == 3
+
+
+def test_build_engines_shares_1b_workers_and_loads_separate_4b_c(
+    base_config, monkeypatch
+):
+    cfg = replace(
+        base_config,
+        model_name="google/gemma-3-1b-it",
+        coordinator_model_name="google/gemma-3-4b-it",
+        model_instance_mode="shared",
+    )
+    created = []
+
+    def fake_build_engine(
+        _cfg,
+        device=None,
+        *,
+        model_name=None,
+        model_revision=None,
+        tokenizer_revision=None,
+    ):
+        instance = object()
+        created.append((model_name or _cfg.model_name, device, instance))
+        return instance
+
+    monkeypatch.setattr("hotpot_mas.runner.build_engine", fake_build_engine)
+    engines = build_engines(cfg)
+
+    assert [name for name, _, _ in created] == [
+        "google/gemma-3-1b-it",
+        "google/gemma-3-4b-it",
+    ]
+    assert engines["alice"] is engines["bob"]
+    assert engines["celab"] is not engines["alice"]

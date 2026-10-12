@@ -23,7 +23,8 @@ Loop outline:
    mean over each example's answer tokens (the TeX's ``1/|y*|``).
 6. After each epoch, evaluate C on the fixed validation report cache;
    keep the checkpoint with the best validation F1 and restore it at the
-   end (never the last epoch).
+   end (never the last epoch). C may use a different base model from the
+   frozen workers.
 7. Final comparison on the identical cached test reports: C0 + reports,
    Cphi + reports, C0 + empty, Cphi + empty.
 """
@@ -289,7 +290,7 @@ def check_worker_adapter_compatibility(
     """Verify the worker adapter was trained on the configured base/LoRA.
 
     Compares ``adapter_config.json`` (base model name, r, lora_alpha)
-    against the Stage 2 model configuration. Returns the compat summary,
+    against the Stage 2 worker-model configuration. Returns the compat summary,
     or ``None`` when no ``adapter_config.json`` is present (e.g. test
     doubles) and nothing can be checked.
     """
@@ -300,22 +301,24 @@ def check_worker_adapter_compatibility(
     r = adapter_config.get("r")
     alpha = adapter_config.get("lora_alpha")
     problems: List[str] = []
-    if base != cfg.model.name:
+    if base != cfg.worker_model.name:
         problems.append(
-            f"adapter base model {base!r} != configured {cfg.model.name!r}"
+            f"adapter base model {base!r} != configured "
+            f"{cfg.worker_model.name!r}"
         )
-    if r is not None and int(r) != cfg.model.peft.r:
+    if r is not None and int(r) != cfg.worker_model.peft.r:
         problems.append(
-            f"adapter r {r} != configured model.peft.r {cfg.model.peft.r}"
+            f"adapter r {r} != configured worker_model.peft.r "
+            f"{cfg.worker_model.peft.r}"
         )
-    if alpha is not None and int(alpha) != cfg.model.peft.alpha:
+    if alpha is not None and int(alpha) != cfg.worker_model.peft.alpha:
         problems.append(
             f"adapter lora_alpha {alpha} != configured "
-            f"model.peft.alpha {cfg.model.peft.alpha}"
+            f"worker_model.peft.alpha {cfg.worker_model.peft.alpha}"
         )
     if problems:
         raise RuntimeError(
-            "worker adapter is incompatible with the Stage 2 model "
+            "worker adapter is incompatible with the Stage 2 worker model "
             "configuration: " + "; ".join(problems)
         )
     return {
@@ -394,7 +397,9 @@ class SynthesizerTrainer:
 
         # 1. Load the best worker checkpoint and freeze it.
         self.worker_policy = (
-            policy_factory() if policy_factory else HFPolicy(cfg.model)
+            policy_factory()
+            if policy_factory
+            else HFPolicy(cfg.worker_model)
         )
         self.worker_policy.load_adapter(self.worker_checkpoint.adapter_dir)
         self._freeze_worker_policy()
@@ -451,7 +456,9 @@ class SynthesizerTrainer:
         self.synthesizer: TrainableSynthesizer = (
             synthesizer_factory()
             if synthesizer_factory
-            else HFLoraSynthesizer(cfg.model, cfg.sft.synthesizer_decode)
+            else HFLoraSynthesizer(
+                cfg.c_model, cfg.sft.synthesizer_decode
+            )
         )
         self.optimizer = torch.optim.AdamW(
             self.synthesizer.trainable_parameters(),
@@ -561,11 +568,11 @@ class SynthesizerTrainer:
                 question.answer,
                 question_id=question.question_id,
             )
-            if len(example.input_ids) > self.cfg.model.max_input_length:
+            if len(example.input_ids) > self.cfg.c_model.max_input_length:
                 raise RuntimeError(
                     f"SFT example {question.question_id} has "
                     f"{len(example.input_ids)} tokens, exceeding "
-                    f"max_input_length {self.cfg.model.max_input_length}"
+                    f"max_input_length {self.cfg.c_model.max_input_length}"
                 )
             examples.append(example)
         logger.info(
@@ -615,7 +622,7 @@ class SynthesizerTrainer:
                 self.synthesizer.tokenizer, "eos_token_id", 0
             )
         pad_token_id = int(pad_token_id)
-        device = self.cfg.model.device
+        device = self.cfg.c_model.device
         batch_size = self.cfg.sft.batch_size
         losses: List[float] = []
         grad_norms: List[float] = []

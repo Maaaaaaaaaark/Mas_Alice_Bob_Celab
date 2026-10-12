@@ -55,6 +55,15 @@ def test_base_uses_transformers_engine():
     assert cfg.engine == "transformers"
 
 
+def test_role_split_config_uses_1b_workers_and_4b_coordinator():
+    cfg = ExperimentConfig.from_yaml(
+        "configs/role_split_1b_workers_4b_c.yaml"
+    )
+    assert cfg.model_name == "google/gemma-3-1b-it"
+    assert cfg.resolved_coordinator_model_name == "google/gemma-3-4b-it"
+    assert cfg.model_instance_mode == "shared"
+
+
 def test_vllm_comparison_config_changes_only_backend_identity():
     base = ExperimentConfig.from_yaml("configs/base.yaml")
     vllm = ExperimentConfig.from_yaml("configs/vllm.yaml")

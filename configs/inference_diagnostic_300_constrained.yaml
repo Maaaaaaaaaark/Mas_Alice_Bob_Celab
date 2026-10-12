@@ -2,7 +2,7 @@
 # The Slurm script first reuses the old worker cache, then runs this same
 # configuration under a second version with reports from the revised prompt.
 experiment_id: inference_diagnostic
-experiment_version: val300_constrained_c_cached_workers
+experiment_version: val300_constrained_c4b_cached_workers
 seed: 0
 output_dir: outputs/diagnostics
 manifest_dir: outputs/training_manifests/inference_diagnostic_300
@@ -17,11 +17,20 @@ data:
   partition_seed: 0
   val_test_split_seed: 0
 
-model:
+worker_model:
   name: google/gemma-3-1b-it
   revision: null
   # Keep the original diagnostic dtype so this rerun isolates only the
   # answer-format/prompt changes. Learner and reward checks use bfloat16.
+  dtype: float16
+  device: cuda
+  attn_implementation: null
+  max_input_length: 30000
+  peft: {r: 16, alpha: 32, dropout: 0.0, target_modules: null}
+
+synthesizer_model:
+  name: google/gemma-3-4b-it
+  revision: null
   dtype: float16
   device: cuda
   attn_implementation: null
@@ -65,4 +74,4 @@ workers:
 
 modes:
   revised_workers:
-    experiment_version: val300_constrained_c_revised_workers
+    experiment_version: val300_constrained_c4b_revised_workers

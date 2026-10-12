@@ -80,8 +80,9 @@ def _run_level_stats(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
     evidence_partition = first.get("config", {}).get(
         "evidence_partition", "supporting_only"
     )
-    model_instance_mode = first.get("config", {}).get(
-        "model_instance_mode", "shared"
+    model_instance_mode = first.get("engine_info", {}).get(
+        "model_instance_mode",
+        first.get("config", {}).get("model_instance_mode", "shared"),
     )
     physical_model_instances = first.get("engine_info", {}).get(
         "physical_model_instances",
